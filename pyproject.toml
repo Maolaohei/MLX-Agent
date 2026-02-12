@@ -49,6 +49,12 @@ dependencies = [
     # 记忆系统 - index1 (BM25 + 向量混合搜索)
     "index1[chinese]>=0.3.0",
     
+    # Token 压缩
+    "tiktoken>=0.5.0",
+    
+    # 定时任务
+    "apscheduler>=3.10.0",
+    
     # HTTP 客户端
     "httpx>=0.25.0",
     
