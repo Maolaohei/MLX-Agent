@@ -1,0 +1,120 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "mlx-agent"
+version = "0.1.0"
+description = "高性能、轻量级、多平台 AI Agent 系统"
+readme = "README.md"
+license = {file = "LICENSE"}
+authors = [
+    {name = "MLX Team", email = "mlx@example.com"}
+]
+keywords = ["ai", "agent", "chatbot", "telegram", "discord", "qq"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Communications :: Chat",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+requires-python = ">=3.13"
+dependencies = [
+    # 核心异步
+    "uvloop>=0.21.0",
+    "aiohttp>=3.9.0",
+    "aiofiles>=23.2.0",
+    
+    # 性能优化
+    "orjson>=3.9.0",
+    "cython>=3.0.0",
+    
+    # 配置与数据
+    "pydantic>=2.5.0",
+    "pydantic-settings>=2.1.0",
+    "pyyaml>=6.0.1",
+    
+    # 日志
+    "loguru>=0.7.0",
+    
+    # 数据库
+    "redis>=5.0.0",
+    "asyncpg>=0.29.0",
+    
+    # 向量数据库
+    "pymilvus>=2.3.0",
+    
+    # HTTP 客户端
+    "httpx>=0.25.0",
+    
+    # 工具
+    "click>=8.1.0",
+    "rich>=13.7.0",
+    "python-dotenv>=1.0.0",
+    
+    # 时间处理
+    "python-dateutil>=2.8.0",
+    "pytz>=2023.3",
+    
+    # 监控
+    "psutil>=5.9.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4.0",
+    "pytest-asyncio>=0.21.0",
+    "pytest-cov>=4.1.0",
+    "black>=23.0.0",
+    "ruff>=0.1.0",
+    "mypy>=1.7.0",
+    "pre-commit>=3.5.0",
+]
+
+all = [
+    # 平台适配器
+    "python-telegram-bot>=20.7",
+    "discord.py>=2.3.0",
+    
+    # LLM 提供商
+    "openai>=1.6.0",
+    "anthropic>=0.8.0",
+    
+    # 额外工具
+    "jinja2>=3.1.0",
+    "markdown>=3.5.0",
+]
+
+[project.scripts]
+mlx-agent = "mlx_agent.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/Maolaohei/MLX-Agent"
+Documentation = "https://github.com/Maolaohei/MLX-Agent/docs"
+Repository = "https://github.com/Maolaohei/MLX-Agent"
+Issues = "https://github.com/Maolaohei/MLX-Agent/issues"
+
+[tool.hatch.build.targets.wheel]
+packages = ["mlx_agent"]
+
+[tool.black]
+line-length = 100
+target-version = ['py313']
+
+[tool.ruff]
+line-length = 100
+select = ["E", "F", "I", "N", "W", "UP", "B", "C4", "SIM"]
+ignore = ["E501"]
+
+[tool.mypy]
+python_version = "3.13"
+strict = true
+warn_return_any = true
+warn_unused_configs = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
