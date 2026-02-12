@@ -19,6 +19,7 @@ from loguru import logger
 from .config import Config
 from .memory import MemorySystem
 from .skills import SkillRegistry
+from .platforms.telegram import TelegramAdapter
 
 
 class MLXAgent:
@@ -47,6 +48,7 @@ class MLXAgent:
         # 初始化组件
         self.memory: Optional[MemorySystem] = None
         self.skills: Optional[SkillRegistry] = None
+        self.telegram: Optional[TelegramAdapter] = None
         self._running = False
         
         # 设置信号处理
@@ -79,7 +81,16 @@ class MLXAgent:
             await self.skills.initialize()
             logger.info("Skill system initialized")
             
-            # TODO: 初始化平台适配器
+            # 初始化平台适配器
+            if self.config.platforms.telegram.enabled:
+                self.telegram = TelegramAdapter(
+                    self.config.platforms.telegram,
+                    self
+                )
+                await self.telegram.initialize()
+                # 在后台启动 Telegram
+                asyncio.create_task(self.telegram.start())
+                logger.info("Telegram adapter started")
             
             logger.info("MLX-Agent started successfully!")
             
@@ -106,6 +117,9 @@ class MLXAgent:
         
         if self.skills:
             await self.skills.close()
+        
+        if self.telegram:
+            await self.telegram.stop()
         
         logger.info("MLX-Agent stopped")
     
