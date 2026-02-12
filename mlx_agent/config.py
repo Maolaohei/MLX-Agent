@@ -27,9 +27,20 @@ class PlatformConfig(BaseModel):
     """Platform adapter configuration"""
     enabled: bool = False
     bot_token: Optional[str] = None
+    admin_user_id: Optional[str] = None
     webhook_url: Optional[str] = None
     api_id: Optional[str] = None  # QQ Bot
     api_hash: Optional[str] = None  # QQ Bot
+    
+    def model_post_init(self, __context):
+        """Expand environment variables"""
+        import os
+        if self.bot_token and self.bot_token.startswith('${') and self.bot_token.endswith('}'):
+            env_var = self.bot_token[2:-1]
+            self.bot_token = os.environ.get(env_var)
+        if self.admin_user_id and self.admin_user_id.startswith('${') and self.admin_user_id.endswith('}'):
+            env_var = self.admin_user_id[2:-1]
+            self.admin_user_id = os.environ.get(env_var)
 
 
 class PlatformsConfig(BaseModel):
