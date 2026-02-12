@@ -99,7 +99,8 @@ class TaskQueue:
         
         # 放入优先级队列 (priority, created_at, task)
         # 使用 created_at 作为次级排序确保FIFO
-        await self._queue.put((priority.value, task.created_at, task))
+        priority_value = priority.value if hasattr(priority, 'value') else priority
+        await self._queue.put((priority_value, task.created_at, task))
         self._semaphore.release()
         
         logger.debug(f"Task {task.id} submitted (type={task_type}, priority={priority.name})")

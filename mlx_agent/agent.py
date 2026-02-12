@@ -27,7 +27,6 @@ from .identity import IdentityManager
 from .compression import TokenCompressor
 from .skills import SkillRegistry
 from .skills.compat.openclaw import OpenClawSkillAdapter
-from .platforms.telegram import TelegramAdapter
 from .tasks import TaskQueue, TaskWorker, TaskExecutor, TaskPriority, Task, TaskResult
 from .chat import ChatSessionManager, ChatResponse
 
@@ -130,6 +129,7 @@ class MLXAgent:
             
             # 8. 初始化平台适配器
             if self.config.platforms.telegram.enabled:
+                from .platforms.telegram import TelegramAdapter
                 self.telegram = TelegramAdapter(
                     self.config.platforms.telegram,
                     self

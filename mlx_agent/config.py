@@ -47,6 +47,16 @@ class LLMConfig(BaseModel):
     model: str = "gpt-4o-mini"
     temperature: float = 0.7
     max_tokens: int = 2000
+    
+    def model_post_init(self, __context):
+        """Expand environment variables in api_key and api_base"""
+        import os
+        if self.api_key and self.api_key.startswith('${') and self.api_key.endswith('}'):
+            env_var = self.api_key[2:-1]
+            self.api_key = os.environ.get(env_var)
+        if self.api_base and self.api_base.startswith('${') and self.api_base.endswith('}'):
+            env_var = self.api_base[2:-1]
+            self.api_base = os.environ.get(env_var)
 
 
 class PerformanceConfig(BaseModel):

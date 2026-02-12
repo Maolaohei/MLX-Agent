@@ -91,6 +91,7 @@ class Task:
     result: Optional[TaskResult] = None
     callback: Optional[TaskCallback] = None
     progress_callback: Optional[Callable[[str, Any], Any]] = None
+    progress_updates: List[Dict] = field(default_factory=list)
     created_at: float = field(default_factory=time.time)
     started_at: Optional[float] = None
     completed_at: Optional[float] = None
@@ -149,10 +150,15 @@ class Task:
     
     def set_progress(self, message: str, progress: float = None):
         """设置进度"""
+        data = {'message': message}
+        if progress is not None:
+            data['progress'] = progress
+        
+        # 保存到更新列表
+        self.progress_updates.append(data)
+        
+        # 调用回调函数
         if self.progress_callback:
-            data = {'message': message}
-            if progress is not None:
-                data['progress'] = progress
             try:
                 self.progress_callback(self.id, data)
             except Exception:

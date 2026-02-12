@@ -10,7 +10,7 @@ import asyncio
 from loguru import logger
 
 from mlx_agent.skills.native.base import NativeSkill, SkillContext, SkillResult
-from mlx_agent.skills.compat.openclaw import OpenClawAdapter
+from mlx_agent.skills.compat.openclaw import OpenClawSkillAdapter
 
 
 class SkillRegistry:
@@ -31,7 +31,8 @@ class SkillRegistry:
         
         # 初始化 OpenClaw 兼容层
         try:
-            self.compat_adapter = OpenClawAdapter()
+            self.compat_adapter = OpenClawSkillAdapter()
+            await self.compat_adapter.initialize()
             logger.info("OpenClaw adapter initialized")
         except Exception as e:
             logger.warning(f"OpenClaw adapter not available: {e}")
