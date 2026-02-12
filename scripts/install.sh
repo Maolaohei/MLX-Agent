@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# MLX-Agent 一键安装脚本
+# MLX-Agent 一键安装脚本 (UV 版本)
 # 
 # 使用方法:
 #   curl -fsSL https://raw.githubusercontent.com/Maolaohei/MLX-Agent/main/scripts/install.sh | sudo bash
@@ -26,9 +26,8 @@ check_system() {
     log_step "检查系统环境..."
     
     # 检查架构
-    if [[ $(uname -m) != "x86_64" ]]; then
-        log_error "仅支持 x86_64 架构"
-        exit 1
+    if [[ $(uname -m) != "x86_64" && $(uname -m) != "aarch64" ]]; then
+        log_warn "非 x86_64/aarch64 架构，可能受限: $(uname -m)"
     fi
     
     # 检查 Linux
@@ -47,48 +46,133 @@ check_system() {
     fi
 }
 
-# 安装 Python 3.13
-install_python() {
-    log_step "安装 Python 3.13..."
+# 安装 UV
+install_uv() {
+    log_step "安装 UV (Python 包管理器)..."
     
-    if command -v python3.13 &> /dev/null; then
-        log_info "Python 3.13 已安装"
+    if command -v uv &> /dev/null; then
+        log_info "UV 已安装，更新中..."
+        uv self update || true
         return
     fi
     
-    if [[ -f /etc/debian_version ]]; then
-        # Debian/Ubuntu
-        apt-get update
-        apt-get install -y software-properties-common
-        add-apt-repository -y ppa:deadsnakes/ppa
-        apt-get update
-        apt-get install -y python3.13 python3.13-venv python3.13-dev
-    else
-        log_error "不支持的操作系统，请手动安装 Python 3.13"
-        exit 1
+    # 使用官方脚本安装 UV
+    curl -LsSf https://astral.sh/uv/install.sh | sh
+    
+    # 确保 UV 在 PATH 中
+    export PATH="$HOME/.cargo/bin:$PATH"
+    if ! command -v uv &> /dev/null; then
+        # 尝试通过 pip 安装
+        log_warn "尝试通过 pip 安装 UV..."
+        pip3 install uv || pip install uv
     fi
     
-    log_info "Python 3.13 安装完成"
+    if command -v uv &> /dev/null; then
+        log_info "UV 安装成功: $(uv --version)"
+    else
+        log_error "UV 安装失败"
+        exit 1
+    fi
+}
+
+# 安装 Python (通过 UV)
+install_python() {
+    log_step "安装 Python (通过 UV)..."
+    
+    # UV 可以自动管理 Python 版本
+    # 安装 Python 3.12 (推荐版本)
+    uv python install 3.12 || true
+    
+    log_info "Python 准备完成"
 }
 
 # 安装系统依赖
 install_deps() {
     log_step "安装系统依赖..."
     
-    apt-get install -y \
-        git \
-        curl \
-        wget \
-        redis-server \
-        build-essential \
-        libffi-dev \
-        libssl-dev
+    if command -v apt-get &> /dev/null; then
+        # Debian/Ubuntu
+        apt-get update
+        apt-get install -y \
+            git \
+            curl \
+            wget \
+            redis-server \
+            build-essential \
+            libffi-dev \
+            libssl-dev \
+            sqlite3 \
+            libsqlite3-dev
+    elif command -v yum &> /dev/null; then
+        # RHEL/CentOS
+        yum install -y \
+            git \
+            curl \
+            wget \
+            redis \
+            gcc \
+            libffi-devel \
+            openssl-devel \
+            sqlite-devel
+        systemctl enable redis
+        systemctl start redis
+    elif command -v pacman &> /dev/null; then
+        # Arch
+        pacman -Sy --noconfirm \
+            git \
+            curl \
+            wget \
+            redis \
+            base-devel \
+            sqlite
+        systemctl enable redis
+        systemctl start redis
+    fi
     
     # 启动 Redis
-    systemctl enable redis-server
-    systemctl start redis-server
+    if command -v systemctl &> /dev/null; then
+        systemctl enable redis-server 2>/dev/null || true
+        systemctl start redis-server 2>/dev/null || true
+        systemctl enable redis 2>/dev/null || true
+        systemctl start redis 2>/dev/null || true
+    fi
     
     log_info "系统依赖安装完成"
+}
+
+# 安装 Ollama (可选)
+install_ollama() {
+    log_step "安装 Ollama (可选，用于向量搜索)..."
+    
+    if command -v ollama &> /dev/null; then
+        log_info "Ollama 已安装"
+        return
+    fi
+    
+    log_warn "Ollama 未安装，向量搜索将不可用"
+    log_info "如需向量搜索，请手动安装:"
+    log_info "  curl -fsSL https://ollama.com/install.sh | sh"
+    log_info "  ollama pull bge-m3"
+    
+    read -p "是否现在安装 Ollama? (y/N): " -n 1 -r
+    echo
+    if [[ $REPLY =~ ^[Yy]$ ]]; then
+        curl -fsSL https://ollama.com/install.sh | sh
+        
+        # 启动 Ollama 服务
+        if command -v systemctl &> /dev/null; then
+            systemctl enable ollama
+            systemctl start ollama
+        fi
+        
+        # 拉取 bge-m3 模型
+        log_info "拉取 bge-m3 嵌入模型..."
+        ollama pull bge-m3 || log_warn "bge-m3 拉取失败，可稍后手动执行: ollama pull bge-m3"
+        
+        log_info "Ollama 安装完成"
+    else
+        log_warn "跳过 Ollama 安装，将使用 BM25-only 模式"
+    fi
 }
 
 # 创建用户和目录
@@ -124,44 +208,72 @@ clone_code() {
     log_info "代码下载完成"
 }
 
-# 创建虚拟环境
-setup_venv() {
-    log_step "创建 Python 虚拟环境..."
+# 创建 UV 虚拟环境并安装依赖
+setup_uv_env() {
+    log_step "创建 UV 虚拟环境..."
     
-    sudo -u mlx python3.13 -m venv /opt/mlx-agent/venv
-    source /opt/mlx-agent/venv/bin/activate
+    cd /opt/mlx-agent
     
-    # 升级 pip
-    pip install --upgrade pip wheel setuptools
+    # 创建虚拟环境
+    sudo -u mlx uv venv /opt/mlx-agent/.venv
     
-    log_info "虚拟环境创建完成"
+    # 激活虚拟环境
+    export VIRTUAL_ENV=/opt/mlx-agent/.venv
+    export PATH="/opt/mlx-agent/.venv/bin:$PATH"
+    
+    log_info "UV 虚拟环境创建完成"
 }
 
-# 安装依赖
+# 安装 Python 依赖 (使用 UV)
 install_python_deps() {
-    log_step "安装 Python 依赖..."
+    log_step "安装 Python 依赖 (UV)..."
     
-    source /opt/mlx-agent/venv/bin/activate
+    cd /opt/mlx-agent
     
+    # 使用 UV 安装依赖 (更快，无冲突)
     # 安装核心依赖
-    pip install \
-        uvloop \
-        orjson \
-        aiohttp \
-        aiofiles \
-        pydantic \
-        pydantic-settings \
-        pyyaml \
-        loguru \
-        redis \
-        asyncpg \
-        pymilvus \
-        httpx \
-        click \
-        rich \
-        python-telegram-bot
+    sudo -u mlx uv pip install --system -e "." || {
+        log_warn "系统模式安装失败，尝试虚拟环境模式..."
+        sudo -u mlx bash -c '
+            export VIRTUAL_ENV=/opt/mlx-agent/.venv
+            export PATH="/opt/mlx-agent/.venv/bin:$PATH"
+            uv pip install -e /opt/mlx-agent
+        '
+    }
     
     log_info "Python 依赖安装完成"
+}
+
+# 配置 index1
+setup_index1() {
+    log_step "配置 index1 记忆系统..."
+    
+    # 确保 index1 可用
+    if ! command -v index1 &> /dev/null; then
+        log_warn "index1 命令未找到，尝试安装..."
+        sudo -u mlx bash -c '
+            export VIRTUAL_ENV=/opt/mlx-agent/.venv
+            export PATH="/opt/mlx-agent/.venv/bin:$PATH"
+            uv pip install index1[chinese]
+        '
+    fi
+    
+    # 配置 embedding 模型
+    sudo -u mlx bash -c '
+        export PATH="/opt/mlx-agent/.venv/bin:$PATH"
+        index1 config embedding_model bge-m3 2>/dev/null || true
+    '
+    
+    # 初始化记忆目录索引
+    sudo -u mlx bash -c '
+        export PATH="/opt/mlx-agent/.venv/bin:$PATH"
+        mkdir -p /opt/mlx-agent/memory/core
+        mkdir -p /opt/mlx-agent/memory/session
+        mkdir -p /opt/mlx-agent/memory/archive
+        cd /opt/mlx-agent/memory && index1 index ./core ./session ./archive --force 2>/dev/null || true
+    '
+    
+    log_info "index1 配置完成"
 }
 
 # 创建配置文件
@@ -170,6 +282,7 @@ create_config() {
     
     cat > /opt/mlx-agent/config/config.yaml << 'EOF'
 # MLX-Agent 配置文件
+# 使用 index1 记忆系统 (BM25 + 向量混合搜索)
 
 name: "MLX-Agent"
 version: "0.1.0"
@@ -181,13 +294,13 @@ performance:
   json_library: orjson
   max_workers: 10
 
-# 记忆系统
+# 记忆系统 (index1)
 memory:
   path: /opt/mlx-agent/memory
-  vector_db: milvus  # 或 zilliz
-  vector_db_host: localhost
-  vector_db_port: 19530
-  collection_name: mlx_memories
+  # index1 自动处理 BM25 + 向量混合搜索
+  # 向量搜索需要 Ollama 运行，否则自动降级为 BM25-only
+  embedding_model: bge-m3
+  ollama_host: http://localhost:11434
 
 # 平台配置
 platforms:
@@ -205,6 +318,7 @@ platforms:
 llm:
   provider: openai
   # api_key: "YOUR_API_KEY_HERE"
+  # api_base: "https://api.openai.com/v1"
   model: gpt-4o-mini
   temperature: 0.7
 EOF
@@ -228,11 +342,12 @@ Type=simple
 User=mlx
 Group=mlx
 WorkingDirectory=/opt/mlx-agent
-Environment=PATH=/opt/mlx-agent/venv/bin:/usr/local/bin
+Environment=VIRTUAL_ENV=/opt/mlx-agent/.venv
+Environment=PATH=/opt/mlx-agent/.venv/bin:/usr/local/bin:/usr/bin
 Environment=PYTHONPATH=/opt/mlx-agent
 Environment=PYTHONUNBUFFERED=1
 Environment=UVLOOP=1
-ExecStart=/opt/mlx-agent/venv/bin/python -m mlx_agent start
+ExecStart=/opt/mlx-agent/.venv/bin/python -m mlx_agent start
 Restart=always
 RestartSec=10
 StandardOutput=journal
@@ -262,6 +377,8 @@ show_finish() {
     echo ""
     echo "📂 安装目录: /opt/mlx-agent"
     echo "⚙️  配置文件: /opt/mlx-agent/config/config.yaml"
+    echo "🐍 Python: 使用 UV 管理"
+    echo "🧠 记忆系统: index1 (BM25 + 向量混合搜索)"
     echo ""
     echo "🚀 使用方法:"
     echo "   1. 编辑配置文件:"
@@ -276,25 +393,40 @@ show_finish() {
     echo "   4. 查看日志:"
     echo "      sudo journalctl -u mlx-agent -f"
     echo ""
+    echo "🧠 记忆系统管理:"
+    echo "   cd /opt/mlx-agent/memory"
+    echo "   sudo -u mlx index1 search \"查询内容\""
+    echo "   sudo -u mlx index1 index ./core --force"
+    echo ""
+    echo "💡 提示:"
+    echo "   - 安装 Ollama 可启用向量搜索: curl -fsSL https://ollama.com/install.sh | sh"
+    echo "   - 拉取嵌入模型: ollama pull bge-m3"
+    echo "   - 无 Ollama 时自动使用 BM25 全文搜索"
+    echo ""
     echo "📖 更多信息: https://github.com/Maolaohei/MLX-Agent"
     echo ""
 }
 
 # 主函数
 main() {
-    echo "🚀 MLX-Agent 一键安装脚本"
-    echo "=========================="
+    echo "🚀 MLX-Agent 一键安装脚本 (UV 版本)"
+    echo "======================================"
     echo ""
     
     check_system
+    install_uv
     install_python
     install_deps
     setup_user
     clone_code
-    setup_venv
+    setup_uv_env
     install_python_deps
+    setup_index1
     create_config
     create_service
+    
+    # 可选安装 Ollama
+    install_ollama || true
     
     show_finish
 }

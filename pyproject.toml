@@ -17,20 +17,22 @@ classifiers = [
     "Intended Audience :: Developers",
     "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
     "Topic :: Communications :: Chat",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
-requires-python = ">=3.13"
+requires-python = ">=3.10"
 dependencies = [
     # 核心异步
-    "uvloop>=0.21.0",
+    "uvloop>=0.21.0; sys_platform != 'win32'",
     "aiohttp>=3.9.0",
     "aiofiles>=23.2.0",
     
     # 性能优化
     "orjson>=3.9.0",
-    "cython>=3.0.0",
     
     # 配置与数据
     "pydantic>=2.5.0",
@@ -44,8 +46,8 @@ dependencies = [
     "redis>=5.0.0",
     "asyncpg>=0.29.0",
     
-    # 向量数据库
-    "pymilvus>=2.3.0",
+    # 记忆系统 - index1 (BM25 + 向量混合搜索)
+    "index1[chinese]>=0.3.0",
     
     # HTTP 客户端
     "httpx>=0.25.0",
@@ -64,6 +66,12 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# 本地向量搜索 (Ollama)
+local = [
+    "ollama>=0.1.0",
+]
+
+# 开发依赖
 dev = [
     "pytest>=7.4.0",
     "pytest-asyncio>=0.21.0",
@@ -74,16 +82,17 @@ dev = [
     "pre-commit>=3.5.0",
 ]
 
+# 平台适配器
+telegram = ["python-telegram-bot>=20.7"]
+discord = ["discord.py>=2.3.0"]
+
+# LLM 提供商
+openai = ["openai>=1.6.0"]
+anthropic = ["anthropic>=0.8.0"]
+
+# 完整安装
 all = [
-    # 平台适配器
-    "python-telegram-bot>=20.7",
-    "discord.py>=2.3.0",
-    
-    # LLM 提供商
-    "openai>=1.6.0",
-    "anthropic>=0.8.0",
-    
-    # 额外工具
+    "mlx-agent[telegram,discord,openai,anthropic,local]",
     "jinja2>=3.1.0",
     "markdown>=3.5.0",
 ]
@@ -102,7 +111,7 @@ packages = ["mlx_agent"]
 
 [tool.black]
 line-length = 100
-target-version = ['py313']
+target-version = ['py310', 'py311', 'py312', 'py313']
 
 [tool.ruff]
 line-length = 100
@@ -110,7 +119,7 @@ select = ["E", "F", "I", "N", "W", "UP", "B", "C4", "SIM"]
 ignore = ["E501"]
 
 [tool.mypy]
-python_version = "3.13"
+python_version = "3.10"
 strict = true
 warn_return_any = true
 warn_unused_configs = true

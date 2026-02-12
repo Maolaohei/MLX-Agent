@@ -15,7 +15,7 @@
 
 | 特性 | 说明 | 状态 |
 |------|------|------|
-| 🧠 智能记忆 | 基于 memsearch 的 Markdown 优先记忆系统 | ✅ Phase 1 |
+| 🧠 智能记忆 | 基于 **index1** 的 BM25 + 向量混合搜索 | ✅ Phase 1 |
 | 🔌 双轨 Skill | 原生 Python + OpenClaw 兼容层 | ✅ Phase 1 |
 | ⚡ 高性能 | Python 3.13 + uvloop + orjson | ✅ Phase 1 |
 | 💬 多平台 | Telegram、QQBot、Discord | 🚧 Phase 2 |
@@ -38,7 +38,7 @@
 | 语言 | Python 3.13+ |
 | 异步 | uvloop + asyncio |
 | JSON | orjson |
-| 向量数据库 | Milvus / Zilliz |
+| 记忆系统 | index1 (BM25 + bge-m3 混合搜索) |
 | 缓存 | Redis |
 | 部署 | 裸机 + systemd |
 
@@ -74,21 +74,36 @@ mlx-agent/
 curl -fsSL https://raw.githubusercontent.com/Maolaohei/MLX-Agent/main/scripts/install.sh | sudo bash
 ```
 
-### 手动安装
+### 手动安装 (UV 推荐)
 
 ```bash
 # 1. 克隆仓库
 git clone https://github.com/Maolaohei/MLX-Agent.git
 cd MLX-Agent
 
-# 2. 安装依赖
-pip install -e ".[all]"
+# 2. 安装 UV (如果尚未安装)
+curl -LsSf https://astral.sh/uv/install.sh | sh
 
-# 3. 配置
+# 3. 创建虚拟环境并安装依赖
+uv venv
+uv pip install -e ".[all]"
+
+# 4. 配置 index1 记忆系统
+uv run index1 config embedding_model bge-m3
+
+# 5. 配置
+mkdir -p config
 cp config/config.example.yaml config/config.yaml
 # 编辑 config/config.yaml
 
-# 4. 启动
+# 6. 启动
+uv run python -m mlx_agent
+```
+
+### 使用传统 pip
+
+```bash
+pip install -e ".[all]"
 python -m mlx_agent
 ```
 
@@ -96,10 +111,10 @@ python -m mlx_agent
 
 ### Phase 1: 核心框架 (当前)
 - [x] 项目脚手架
-- [ ] 记忆系统实现
+- [x] 记忆系统实现 (index1 + BM25/向量混合)
 - [ ] Skill 系统（含兼容层）
 - [ ] Telegram 适配器
-- [ ] 一键安装脚本
+- [x] 一键安装脚本 (UV 版本)
 
 ### Phase 2: 多平台支持
 - [ ] QQ Bot 适配器
