@@ -65,6 +65,7 @@ Thumbs.db
 # Project specific
 memory/
 config/config.yaml
+config/apis.yaml  # API 密钥配置文件（包含敏感信息）
 *.db
 *.sqlite
 *.sqlite3

@@ -30,6 +30,7 @@ from .skills.compat.openclaw import OpenClawSkillAdapter
 from .tasks import TaskQueue, TaskWorker, TaskExecutor, TaskPriority, Task, TaskResult
 from .chat import ChatSessionManager, ChatResponse
 from .llm import LLMClient
+from .api_manager import APIManager, get_api_manager
 
 
 class MLXAgent:
@@ -77,6 +78,7 @@ class MLXAgent:
         self.skills: Optional[SkillRegistry] = None
         self.openclaw_skills: Optional[OpenClawSkillAdapter] = None
         self.telegram: Optional[TelegramAdapter] = None
+        self.api_manager: Optional[APIManager] = None  # API 管理器
         self._running = False
         
         # 任务系统
@@ -117,7 +119,12 @@ class MLXAgent:
             self.compressor = TokenCompressor(model=self.config.llm.model)
             logger.info("Token compressor initialized")
             
-            # 3. 初始化记忆系统
+            # 3. 初始化 API 管理器（必须在技能系统之前）
+            self.api_manager = get_api_manager()
+            await self.api_manager.initialize()
+            logger.info("API manager initialized")
+            
+            # 4. 初始化记忆系统
             self.memory = MemorySystem(self.config.memory)
             await self.memory.initialize()
             logger.info("Memory system initialized")
