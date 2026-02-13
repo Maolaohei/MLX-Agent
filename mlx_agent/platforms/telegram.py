@@ -159,8 +159,34 @@ class TelegramAdapter:
         self.bot = None
         self.reaction_engine = ReactionEngine()
         self._running = False
+        self._typing_tasks: Dict[str, asyncio.Task] = {}  # chat_id -> task
         
         logger.info("Telegram adapter initialized")
+        
+    async def start_typing_loop(self, chat_id: str):
+        """开始持续发送打字状态"""
+        if chat_id in self._typing_tasks:
+            return
+            
+        async def loop():
+            try:
+                while True:
+                    await self._send_typing(chat_id)
+                    await asyncio.sleep(4.0)  # Telegram typing lasts ~5s
+            except asyncio.CancelledError:
+                pass
+            except Exception as e:
+                logger.debug(f"Typing loop error: {e}")
+        
+        self._typing_tasks[chat_id] = asyncio.create_task(loop())
+        logger.debug(f"Started typing loop for {chat_id}")
+        
+    async def stop_typing_loop(self, chat_id: str):
+        """停止发送打字状态"""
+        if chat_id in self._typing_tasks:
+            self._typing_tasks[chat_id].cancel()
+            del self._typing_tasks[chat_id]
+            logger.debug(f"Stopped typing loop for {chat_id}")
     
     async def initialize(self):
         """初始化 Telegram Bot"""
@@ -209,9 +235,20 @@ class TelegramAdapter:
         
         logger.info("Telegram bot started")
         
-        # 保持运行
+        # 保持运行 - 添加错误处理防止意外退出
+        logger.debug("[TELEGRAM] Entering main loop...")
+        loop_count = 0
         while self._running:
-            await asyncio.sleep(1)
+            try:
+                await asyncio.sleep(1)
+                loop_count += 1
+                if loop_count % 60 == 0:  # 每分钟记录一次
+                    logger.debug(f"[TELEGRAM] Main loop alive, iteration {loop_count}")
+            except Exception as e:
+                logger.error(f"[TELEGRAM] Error in main loop: {e}")
+                await asyncio.sleep(1)
+        
+        logger.info("[TELEGRAM] Main loop ended")
     
     async def stop(self):
         """停止 Telegram Bot"""
@@ -226,7 +263,18 @@ class TelegramAdapter:
     
     async def _handle_message(self, update, context):
         """处理文本消息"""
-        if not update.message or not update.message.text:
+        logger.info(f"[TELEGRAM] _handle_message called! update_id={update.update_id if update else 'None'}")
+        
+        if not update:
+            logger.error("[TELEGRAM] Update is None!")
+            return
+            
+        if not update.message:
+            logger.error("[TELEGRAM] update.message is None!")
+            return
+            
+        if not update.message.text:
+            logger.info("[TELEGRAM] Message has no text, ignoring")
             return
         
         user_id = str(update.message.from_user.id)
@@ -235,72 +283,57 @@ class TelegramAdapter:
         text = update.message.text
         username = update.message.from_user.username or update.message.from_user.first_name
         
-        logger.info(f"Telegram message from {username}({user_id}): {text[:50]}...")
+        logger.info(f"[MESSAGE] From {username}({user_id}): {text[:100]}")
+        logger.debug(f"[MESSAGE] chat_id={chat_id}, message_id={message_id}")
         
         try:
-            # 1. 发送表情反应（已读确认）- 立即发送，无需等待
-            await self._send_reaction(update, text, user_id)
+            # 可选：发送表情反应（已读确认），但不阻塞文字回复
+            # await self._send_reaction(update, text, user_id)
             
-            # 2. 判断是否需要文字回复
-            # 简短问候/感叹只回复表情，不回复文字
-            if self._should_reply_with_text(text):
-                # 发送打字状态
-                await self._send_typing(update.effective_chat.id)
-                
-                # 处理消息
-                response = await self.agent.handle_message(
-                    platform="telegram",
-                    user_id=user_id,
-                    text=text,
-                    chat_id=chat_id,
-                    message_id=message_id,
-                    username=username
-                )
-                
-                # 发送回复
-                if response:
-                    await self.send_message(chat_id, response, reply_to_message_id=message_id)
+            logger.debug("[MESSAGE] Sending typing indicator...")
+            # 发送打字状态
+            await self._send_typing(update.effective_chat.id)
+            
+            logger.debug("[MESSAGE] Calling agent.handle_message...")
+            # 处理消息
+            response = await self.agent.handle_message(
+                platform="telegram",
+                user_id=user_id,
+                text=text,
+                chat_id=chat_id,
+                message_id=message_id,
+                username=username
+            )
+            
+            logger.debug(f"[MESSAGE] Got response: {response[:100] if response else 'None'}...")
+            
+            # 发送回复 (忽略空消息)
+            if response and response.strip():
+                logger.debug("[MESSAGE] Sending response...")
+                result = await self.send_message(chat_id, response, reply_to_message_id=message_id)
+                logger.debug(f"[MESSAGE] Send result: {result}")
             else:
-                # 只回复表情，不处理复杂逻辑
-                logger.debug(f"Short message '{text[:20]}...' - emoji only")
+                logger.debug("[MESSAGE] Empty response, ignoring")
                 
         except Exception as e:
-            logger.error(f"Error handling Telegram message: {e}")
-            # 错误时不回复，避免刷屏
-            pass
+            logger.error(f"[MESSAGE ERROR] {type(e).__name__}: {e}")
+            logger.exception("[MESSAGE ERROR] Full traceback:")
+            try:
+                await self.send_message(chat_id, f"❌ 错误: {str(e)[:100]}", reply_to_message_id=message_id)
+            except Exception as e2:
+                logger.error(f"[MESSAGE ERROR] Failed to send error message: {e2}")
     
     def _should_reply_with_text(self, text: str) -> bool:
         """判断是否需要文字回复
         
-        简短消息（如"哈喽"、"你好"、"啊"）只回复表情
-        复杂消息才回复文字
-        
-        Args:
-            text: 用户消息
-            
-        Returns:
-            是否需要文字回复
+        现在所有消息都会回复文字（正常 AI 助手模式）
+        表情反应仅作为辅助，不替代文字回复
         """
-        # 去除空白
-        text = text.strip()
-        
-        # 长度检查 - 短消息只回复表情
-        if len(text) <= 10:
+        # 纯表情消息可以不回复文字
+        if self._is_only_emojis(text.strip()):
             return False
         
-        # 简单问候检查
-        simple_greetings = [
-            'hi', 'hello', 'hey', '你好', '您好', '哈喽', '在吗', '在？',
-            '你好呀', '哈喽呀', 'hi~', 'hello~', 'hey~',
-            '啊', '哦', '嗯', '哈', '嘿', '哎', '哇'
-        ]
-        if text.lower() in simple_greetings:
-            return False
-        
-        # 纯表情不回复文字
-        if self._is_only_emojis(text):
-            return False
-        
+        # 其他所有消息都回复文字
         return True
     
     def _is_only_emojis(self, text: str) -> bool:
@@ -367,19 +400,26 @@ class TelegramAdapter:
             # 获取合适的表情
             emoji = self.reaction_engine.get_reaction(text, user_id)
             
-            # 方法1: 回复消息带表情
-            # await update.message.reply_text(emoji)
-            
-            # 方法2: 添加消息反应 (需要 Bot API 6.4+)
+            # 方法1: 添加消息反应 (需要 Bot API 6.4+)
+            reaction_sent = False
             try:
                 await self.bot.set_message_reaction(
                     chat_id=update.effective_chat.id,
                     message_id=update.message.message_id,
                     reaction=[{"type": "emoji", "emoji": emoji}]
                 )
-            except Exception:
-                # 如果不支持反应，发送一个短暂的状态消息
-                pass
+                reaction_sent = True
+                logger.debug(f"Reaction sent: {emoji}")
+            except Exception as e:
+                logger.debug(f"set_message_reaction failed: {e}")
+            
+            # 方法2: 如果反应失败，发送表情消息
+            if not reaction_sent:
+                try:
+                    await update.message.reply_text(emoji)
+                    logger.debug(f"Emoji reply sent: {emoji}")
+                except Exception as e2:
+                    logger.debug(f"Emoji reply failed: {e2}")
                 
         except Exception as e:
             logger.debug(f"Failed to send reaction: {e}")
@@ -400,10 +440,7 @@ class TelegramAdapter:
             
             # 分割长消息
             max_length = 4096
-            if len(text) > max_length:
-                parts = [text[i:i+max_length] for i in range(0, len(text), max_length)]
-            else:
-                parts = [text]
+            parts = [text[i:i+max_length] for i in range(0, len(text), max_length)]
             
             for i, part in enumerate(parts):
                 kwargs = {
@@ -412,11 +449,16 @@ class TelegramAdapter:
                     'parse_mode': 'Markdown'
                 }
                 
-                # 只有第一部分回复原消息
                 if i == 0 and reply_to_message_id:
                     kwargs['reply_parameters'] = ReplyParameters(message_id=int(reply_to_message_id))
                 
-                await self.bot.send_message(**kwargs)
+                try:
+                    await self.bot.send_message(**kwargs)
+                except Exception as e:
+                    # Markdown 解析失败，降级为纯文本
+                    logger.warning(f"Markdown send failed, retrying with plain text: {e}")
+                    kwargs.pop('parse_mode', None)
+                    await self.bot.send_message(**kwargs)
             
             return True
             

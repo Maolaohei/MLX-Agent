@@ -29,6 +29,7 @@ from .skills import SkillRegistry
 from .skills.compat.openclaw import OpenClawSkillAdapter
 from .tasks import TaskQueue, TaskWorker, TaskExecutor, TaskPriority, Task, TaskResult
 from .chat import ChatSessionManager, ChatResponse
+from .llm import LLMClient
 
 
 class MLXAgent:
@@ -48,9 +49,22 @@ class MLXAgent:
         Args:
             config_path: 配置文件路径，默认使用 config/config.yaml
         """
-        # 使用 uvloop 加速 asyncio
-        asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())
-        self.loop = asyncio.get_event_loop()
+        # 使用 uvloop 加速 asyncio (如果支持)
+        try:
+            import uvloop
+            asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())
+        except ImportError:
+            pass
+        
+        # 创建新的事件循环
+        try:
+            self.loop = asyncio.get_event_loop()
+            if self.loop.is_closed():
+                self.loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(self.loop)
+        except RuntimeError:
+            self.loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(self.loop)
         
         # 加载配置
         self.config = Config.load(config_path)
@@ -70,6 +84,9 @@ class MLXAgent:
         self.task_executor: Optional[TaskExecutor] = None
         self.task_worker: Optional[TaskWorker] = None
         self.chat_manager: Optional[ChatSessionManager] = None
+        
+        # LLM 客户端
+        self.llm: Optional[LLMClient] = None
         
         # 设置信号处理
         self._setup_signal_handlers()
@@ -112,7 +129,66 @@ class MLXAgent:
             )
             logger.info("Memory consolidator initialized")
             
-            # 5. 初始化 Skill 系统
+            # 5. 初始化 LLM 客户端
+            try:
+                # 尝试使用新配置结构
+                primary_config = None
+                fallback_config = None
+                failover_enabled = False
+                
+                # 检查 config.llm 是否是 Pydantic 对象且有 primary 字段
+                if hasattr(self.config.llm, 'primary') and self.config.llm.primary:
+                    logger.info("Using multi-model configuration")
+                    primary_data = self.config.llm.primary
+                    primary_config = {
+                        'api_key': primary_data.api_key,
+                        'api_base': primary_data.api_base,
+                        'auth_token': primary_data.auth_token,
+                        'model': primary_data.model,
+                        'temperature': primary_data.temperature,
+                        'max_tokens': primary_data.max_tokens,
+                    }
+                    
+                    if self.config.llm.fallback:
+                        fallback_data = self.config.llm.fallback
+                        fallback_config = {
+                            'api_key': fallback_data.api_key,
+                            'api_base': fallback_data.api_base,
+                            'auth_token': fallback_data.auth_token,
+                            'model': fallback_data.model,
+                            'temperature': fallback_data.temperature,
+                            'max_tokens': fallback_data.max_tokens,
+                        }
+                    
+                    failover_enabled = self.config.llm.failover.enabled
+                else:
+                    # 兼容旧配置
+                    logger.info("Using legacy LLM configuration")
+                    primary_config = {
+                        'api_key': self.config.llm.api_key,
+                        'api_base': self.config.llm.api_base,
+                        'auth_token': self.config.llm.auth_token,
+                        'model': self.config.llm.model,
+                        'temperature': self.config.llm.temperature,
+                        'max_tokens': self.config.llm.max_tokens,
+                    }
+                
+                if primary_config and primary_config.get('api_key'):
+                    self.llm = LLMClient(
+                        primary_config=primary_config,
+                        fallback_config=fallback_config,
+                        failover_enabled=failover_enabled
+                    )
+                    logger.info(f"LLM client initialized: {primary_config.get('model')}")
+                else:
+                    logger.error("LLM config missing API Key")
+                    
+            except Exception as e:
+                logger.error(f"Failed to initialize LLM: {e}")
+                import traceback
+                logger.error(traceback.format_exc())
+            
+            # 6. 初始化 Skill 系统
             self.skills = SkillRegistry(self)
             await self.skills.initialize()
             logger.info("Skill system initialized")
@@ -240,7 +316,7 @@ class MLXAgent:
             slow_handler=self._slow_handle_message
         )
     
-    async def _quick_handle_message(self, text: str, context: dict = None, **kwargs) -> Optional[str]:
+    async def _quick_handle_message(self, text: str, context: dict = None, history: list = None, **kwargs) -> Optional[str]:
         """快速消息处理器
         
         处理简单、快速响应的请求
@@ -248,6 +324,7 @@ class MLXAgent:
         Args:
             text: 用户消息
             context: 上下文信息
+            history: 对话历史
             
         Returns:
             响应文本，None 表示需要转入慢速处理
@@ -297,9 +374,22 @@ class MLXAgent:
         if any(g in text_lower for g in greetings):
             return "👋 你好！我是 MLX-Agent，有什么可以帮你的吗？"
         
-        # 短消息快速响应
-        if len(text) < 10:
-            return f"收到: {text}"
+        # 短消息也使用 LLM 回复（不是复读机）
+        if len(text) < 50 and self.llm:
+            # 使用 LLM 生成回复，不经过慢速队列
+            try:
+                base_prompt = "简短回复。"
+                if self.identity:
+                    system_prompt = self.identity.inject_to_prompt(base_prompt)
+                else:
+                    system_prompt = base_prompt
+                
+                response = await self.llm.simple_chat(text, system_prompt)
+                return response
+            except Exception as e:
+                logger.error(f"Quick LLM call failed: {e}")
+                # 如果 LLM 失败，转入慢速队列
+                return None
         
         # 需要复杂处理的返回 None，转入慢速队列
         return None
@@ -309,56 +399,161 @@ class MLXAgent:
         text: str,
         context: dict = None,
         task: Task = None,
+        history: list = None,
         **kwargs
     ) -> str:
-        """慢速消息处理器
+        """慢速消息处理器 - 使用 LLM 生成智能回复 (支持工具调用和对话历史)"""
         
-        在后台线程池中执行复杂任务
-        
-        Args:
-            text: 用户消息
-            context: 上下文信息
-            task: 任务对象（用于进度更新）
-            
-        Returns:
-            响应文本
-        """
         if task:
             task.set_progress("🤔 正在理解你的问题...", 0.1)
         
-        # 模拟耗时处理
-        await asyncio.sleep(0.5)
+        # 0. 准备对话历史
+        messages = []
+        history = history or []
         
-        if task:
-            task.set_progress("🔍 搜索相关记忆...", 0.3)
-        
-        # 搜索记忆
+        # 1. 准备上下文和系统提示
+        # 搜索相关记忆 (作为 System Prompt 的补充)
         memories = []
         if self.memory:
             try:
-                memories = await self.memory.search(text, top_k=5)
+                memories = await self.memory.search(text, top_k=3)
+                if task:
+                    task.set_progress("🔍 搜索相关记忆...", 0.3)
             except Exception as e:
                 logger.warning(f"Memory search failed: {e}")
         
-        await asyncio.sleep(0.3)
+        # 构建基础 Prompt
+        base_prompt = "你是 MLX-Agent，一个强大的 AI 助手。请保持对话连贯性，参考之前的对话历史。"
         
-        if task:
-            task.set_progress("💭 思考回复...", 0.6)
-        
-        # 构建回复
-        response_parts = [f"📝 处理完成！\n\n关于: {text[:100]}..."]
-        
+        # 使用 IdentityManager 生成完整 Prompt
+        if self.identity:
+            system_prompt = self.identity.inject_to_prompt(base_prompt)
+        else:
+            system_prompt = base_prompt
+            
+        # 补充模型信息
+        current_model = "unknown"
+        if self.llm:
+            current_model = self.llm.get_current_model()
+            system_prompt += f"\n\n当前使用的模型: {current_model}"
+            
+            # 如果是 Gemini-3 Pro，增加特定指令
+            if "gemini-3" in current_model:
+                system_prompt += "\n\n请充分利用 Gemini-3 Pro 的推理能力，回答要深入、全面。"
+
+        # 如果有记忆，添加到系统提示
         if memories:
-            response_parts.append(f"\n💡 找到 {len(memories)} 条相关记忆")
+            memory_context = "\n\n相关记忆:\n" + "\n".join([f"- {m.get('content', '')[:100]}" for m in memories[:3]])
+            system_prompt += memory_context
         
-        await asyncio.sleep(0.2)
+        # 构建消息列表：系统提示 + 历史 + 当前消息
+        messages.append({"role": "system", "content": system_prompt})
+        
+        # 添加历史对话（最多保留最近10轮，避免超出上下文限制）
+        if history:
+            # 过滤掉 system 消息，只保留 user/assistant/tool
+            history_to_use = [m for m in history if m.get("role") in ["user", "assistant", "tool"]][-20:]
+            messages.extend(history_to_use)
+            logger.debug(f"[LLM] Using {len(history_to_use)} history messages")
+        
+        # 添加当前用户消息
+        messages.append({"role": "user", "content": text})
+        
+        # 2. 获取可用工具
+        tools = None
+        if self.skills:
+            try:
+                tools = self.skills.get_tools_schema()
+                if tools:
+                    logger.debug(f"Available tools: {len(tools)}")
+            except Exception as e:
+                logger.error(f"Failed to get tools: {e}")
         
         if task:
-            task.set_progress("✨ 完成", 1.0)
+            task.set_progress("🧠 调用 AI 生成回复...", 0.6)
         
-        response_parts.append(f"\n\n任务 ID: `{task.id if task else 'N/A'}`")
+        # 3. LLM 交互循环 (支持多轮工具调用)
+        max_turns = 5  # 防止无限循环
+        turn_count = 0
         
-        return "\n".join(response_parts)
+        while turn_count < max_turns:
+            turn_count += 1
+            
+            if not self.llm:
+                return f"收到你的消息: {text[:100]}...\n\n（LLM 未配置，无法生成智能回复）"
+                
+            try:
+                # 调用 LLM
+                # 如果提供了工具，启用思考模式（Kimi k2.5 支持）
+                use_reasoning = tools is not None and len(tools) > 0
+                
+                response_msg = await self.llm.chat(
+                    messages=messages,
+                    tools=tools,
+                    tool_choice="auto" if tools else None,
+                    reasoning=use_reasoning
+                )
+                
+                # 检查是否有工具调用
+                tool_calls = response_msg.get("tool_calls")
+                content = response_msg.get("content")
+                
+                # 如果有内容，先添加到历史 (Assistant Message)
+                # 注意：有些模型可能同时返回 content 和 tool_calls
+                # OpenAI 规范要求 Assistant Message 必须包含 tool_calls 字段如果它被使用了
+                assistant_msg = {
+                    "role": "assistant",
+                    "content": content
+                }
+                if tool_calls:
+                    assistant_msg["tool_calls"] = tool_calls
+                
+                messages.append(assistant_msg)
+                
+                if not tool_calls:
+                    # 没有工具调用，直接返回内容
+                    if task:
+                        task.set_progress("✨ 完成", 1.0)
+                    return content or "（AI 未返回任何内容）"
+                
+                # 有工具调用，执行工具
+                if task:
+                    task.set_progress(f"🔧 执行工具 ({len(tool_calls)} 个)...", 0.8)
+                
+                for tool_call in tool_calls:
+                    function_name = tool_call.get("function", {}).get("name")
+                    call_id = tool_call.get("id")
+                    
+                    # 执行工具
+                    try:
+                        result = await self.skills.execute_tool_call(
+                            tool_call,
+                            user_id=context.get("user_id") if context else None,
+                            chat_id=context.get("chat_id") if context else None,
+                            platform=context.get("platform") if context else None
+                        )
+                        
+                        tool_output = result.output if result.success else f"Error: {result.error}"
+                        
+                    except Exception as e:
+                        tool_output = f"Execution failed: {str(e)}"
+                    
+                    # 添加工具执行结果 (Tool Message)
+                    messages.append({
+                        "role": "tool",
+                        "tool_call_id": call_id,
+                        "name": function_name,
+                        "content": str(tool_output)
+                    })
+                
+                # 继续下一轮循环，将工具结果传回 LLM
+                continue
+                
+            except Exception as e:
+                logger.error(f"LLM interaction failed: {e}")
+                return f"抱歉，AI 服务暂时不可用: {str(e)[:100]}"
+        
+        return "交互次数过多，已终止。"
     
     async def _on_task_complete(self, task: Task, result: TaskResult):
         """任务完成回调
@@ -367,38 +562,46 @@ class MLXAgent:
         """
         logger.info(f"Task {task.id} completed, notifying user {task.user_id}")
         
-        # 构建通知消息
-        if result.success:
-            icon = "✅"
-            status = "完成"
+        # 针对聊天任务的特殊处理：只发送结果，不发送状态头
+        if task.type == "chat" and result.success:
+            message = str(result.output)
         else:
-            icon = "❌"
-            status = "失败"
-        
-        message = (
-            f"{icon} 任务 `{task.id}` {status}\n"
-            f"⏱️ 耗时: {result.duration_ms/1000:.1f}s\n"
-        )
-        
-        if result.output:
-            output_text = str(result.output)
-            if len(output_text) > 500:
-                output_text = output_text[:500] + "..."
-            message += f"\n📤 结果:\n{output_text}"
-        
-        if result.error:
-            error_text = str(result.error)
-            if len(error_text) > 200:
-                error_text = error_text[:200] + "..."
-            message += f"\n❗ 错误: {error_text}"
+            # 其他任务或失败时，保留详细信息
+            if result.success:
+                icon = "✅"
+                status = "完成"
+            else:
+                icon = "❌"
+                status = "失败"
+            
+            message = (
+                f"{icon} 任务 `{task.id}` {status}\n"
+                f"⏱️ 耗时: {result.duration_ms/1000:.1f}s\n"
+            )
+            
+            if result.output:
+                output_text = str(result.output)
+                if len(output_text) > 500:
+                    output_text = output_text[:500] + "..."
+                message += f"\n📤 结果:\n{output_text}"
+            
+            if result.error:
+                error_text = str(result.error)
+                if len(error_text) > 200:
+                    error_text = error_text[:200] + "..."
+                message += f"\n❗ 错误: {error_text}"
         
         # 发送到平台
         if task.platform == "telegram" and self.telegram:
             try:
+                # 先发消息
                 await self.telegram.send_message(task.chat_id, message)
                 logger.debug(f"Task notification sent to {task.chat_id}")
             except Exception as e:
                 logger.error(f"Failed to send task notification: {e}")
+            finally:
+                # 无论成功失败，发完消息后才停止 Typing
+                await self.telegram.stop_typing_loop(task.chat_id)
         
         # 保存到记忆
         if self.memory and result.success:
@@ -430,18 +633,9 @@ class MLXAgent:
         自动判断是快速响应还是慢速任务：
         - 快速响应：直接返回（<100ms）
         - 慢速任务：进入队列异步处理，立即返回任务ID
-        
-        Args:
-            platform: 平台名称 (telegram, qq, discord)
-            user_id: 用户ID
-            text: 消息内容
-            chat_id: 聊天ID（用于后续通知）
-            message_id: 消息ID
-            username: 用户名
-            
-        Returns:
-            回复内容
         """
+        logger.debug(f"[AGENT] handle_message called: platform={platform}, user_id={user_id}, text={text[:50]}...")
+        
         try:
             # 1. 检查人设热重载
             if self.identity:
@@ -449,6 +643,7 @@ class MLXAgent:
             
             # 2. 使用聊天会话管理器处理
             if self.chat_manager:
+                logger.debug("[AGENT] Using chat_manager")
                 session = self.chat_manager.get_or_create(
                     platform=platform,
                     user_id=user_id,
@@ -458,14 +653,25 @@ class MLXAgent:
                     notify_callback=self._create_notify_callback(platform, chat_id or user_id)
                 )
                 
+                logger.debug("[AGENT] Calling session.handle_message")
                 response = await session.handle_message(text)
+                logger.debug(f"[AGENT] Got response: {response.text[:100] if response and response.text else 'None'}...")
+                
+                # 如果是任务创建，启动打字状态并返回空（让 adapter 保持沉默）
+                if response.is_task:
+                    if platform == "telegram" and self.telegram and (chat_id or user_id):
+                        await self.telegram.start_typing_loop(chat_id or user_id)
+                    return None
+                    
                 return response.text
             
             # 3. 降级：直接处理（无任务系统）
+            logger.debug("[AGENT] Using legacy handler")
             return await self._legacy_handle_message(platform, user_id, text)
             
         except Exception as e:
-            logger.error(f"Error handling message: {e}")
+            logger.error(f"[AGENT ERROR] {type(e).__name__}: {e}")
+            logger.exception("[AGENT ERROR] Full traceback:")
             return f"❌ 处理消息时出错: {e}"
     
     def _create_notify_callback(self, platform: str, chat_id: str):

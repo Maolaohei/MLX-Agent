@@ -6,6 +6,7 @@
 
 import uuid
 import time
+import asyncio  # 新增
 from enum import Enum, auto
 from dataclasses import dataclass, field
 from typing import Any, Callable, Optional, Dict, List
@@ -160,7 +161,15 @@ class Task:
         # 调用回调函数
         if self.progress_callback:
             try:
-                self.progress_callback(self.id, data)
+                if asyncio.iscoroutinefunction(self.progress_callback):
+                    # 如果是协程，尝试在当前循环中调度
+                    try:
+                        loop = asyncio.get_running_loop()
+                        loop.create_task(self.progress_callback(self.id, data))
+                    except RuntimeError:
+                        # 没有运行的循环，无法调度异步回调
+                        pass
+                else:
+                    self.progress_callback(self.id, data)
             except Exception:
                 pass
-

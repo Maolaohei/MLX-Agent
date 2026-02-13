@@ -52,7 +52,7 @@ class MemorySystem:
     
     def __init__(self, config: MemoryConfig):
         self.config = config
-        self.memory_path = Path(config.path)
+        self.memory_path = Path(config.path).resolve()  # 使用绝对路径
         self.index_path = self.memory_path / ".index1"
         self._initialized = False
         self._ollama_available = False
@@ -126,12 +126,17 @@ class MemorySystem:
             for subdir in ["core", "session", "archive"]:
                 dir_path = self.memory_path / subdir
                 if dir_path.exists() and any(dir_path.iterdir()):
-                    subprocess.run(
+                    result = subprocess.run(
                         ["index1", "index", str(dir_path), "--force"],
                         capture_output=True,
+                        text=True,
                         check=False,
                         cwd=str(self.memory_path)
                     )
+                    if result.returncode != 0:
+                        logger.error(f"Failed to index {subdir}: {result.stderr}")
+                    else:
+                        logger.debug(f"Indexed {subdir}")
         except Exception as e:
             logger.warning(f"Failed to index memories: {e}")
     

@@ -8,7 +8,7 @@
 
 import asyncio
 import time
-from typing import Optional, Callable, Any, Dict, AsyncGenerator
+from typing import Optional, Callable, Any, Dict, List, AsyncGenerator
 from dataclasses import dataclass, field
 from loguru import logger
 
@@ -28,6 +28,15 @@ class ChatContext:
 
 
 @dataclass
+class ChatMessage:
+    """单条聊天消息"""
+    role: str  # "user", "assistant", "system", "tool"
+    content: str
+    timestamp: float = field(default_factory=time.time)
+    metadata: Dict = field(default_factory=dict)
+
+
+@dataclass
 class ChatResponse:
     """聊天响应"""
     text: str
@@ -43,7 +52,8 @@ class ChatResponse:
     @classmethod
     def task_created(cls, task_id: str, message: str = None) -> 'ChatResponse':
         """任务已创建响应"""
-        text = message or f"⏳ 任务已创建 (ID: `{task_id}`)\n完成后我会通知你~"
+        # 默认不返回文本，保持静默（typing状态会由适配器维护）
+        text = message or ""
         return cls(text=text, is_task=True, task_id=task_id)
     
     @classmethod
@@ -59,6 +69,7 @@ class ChatSession:
     - 快速响应（<100ms）直接返回
     - 慢速任务（>1s）进入队列异步处理
     - 任务状态通知
+    - 对话历史维护（解决前言不搭后语问题）
     """
     
     def __init__(
@@ -67,7 +78,8 @@ class ChatSession:
         task_queue: TaskQueue,
         quick_handler: Optional[Callable] = None,
         slow_handler: Optional[Callable] = None,
-        notify_callback: Optional[Callable] = None
+        notify_callback: Optional[Callable] = None,
+        max_history: int = 20  # 保留最近20轮对话
     ):
         """初始化聊天会话
         
@@ -77,6 +89,7 @@ class ChatSession:
             quick_handler: 快速消息处理器
             slow_handler: 慢速消息处理器
             notify_callback: 通知回调函数
+            max_history: 最大历史轮数
         """
         self.context = context
         self.queue = task_queue
@@ -84,43 +97,71 @@ class ChatSession:
         self.slow_handler = slow_handler
         self.notify_callback = notify_callback
         self._task_callbacks: Dict[str, Callable] = {}  # 任务ID -> 回调
+        self._history: List[ChatMessage] = []  # 对话历史
+        self._max_history = max_history
         
         logger.info(f"ChatSession created: {context.user_id}@{context.platform}")
     
+    def add_message(self, role: str, content: str, metadata: Dict = None):
+        """添加消息到历史"""
+        msg = ChatMessage(role=role, content=content, metadata=metadata or {})
+        self._history.append(msg)
+        
+        # 限制历史长度
+        if len(self._history) > self._max_history * 2:  # *2 因为每轮有 user + assistant
+            self._history = self._history[-self._max_history * 2:]
+    
+    def get_history(self, limit: int = 10) -> List[Dict]:
+        """获取历史消息（用于传给 LLM）"""
+        result = []
+        for msg in self._history[-limit * 2:]:  # 最近 limit 轮
+            result.append({
+                "role": msg.role,
+                "content": msg.content
+            })
+        return result
+    
+    def clear_history(self):
+        """清空历史"""
+        self._history.clear()
+        
     async def handle_message(self, text: str) -> ChatResponse:
-        """处理用户消息
+        """处理用户消息"""
+        logger.debug(f"[CHAT] handle_message: text={text[:50]}...")
         
-        自动判断是快速响应还是慢速任务
+        # 记录用户消息
+        self.add_message("user", text)
         
-        Args:
-            text: 用户消息
-            
-        Returns:
-            聊天响应
-        """
         # 1. 先尝试快速响应
         if self.quick_handler:
             try:
+                logger.debug("[CHAT] Trying quick handler...")
                 start = time.time()
                 result = await self._try_quick_handle(text)
                 elapsed = time.time() - start
                 
                 if result is not None and elapsed < 1.0:
-                    # 快速响应成功
-                    logger.debug(f"Quick response in {elapsed*1000:.1f}ms")
+                    logger.debug(f"[CHAT] Quick response success in {elapsed*1000:.1f}ms")
+                    # 记录助手回复
+                    self.add_message("assistant", result)
                     return ChatResponse.quick(result)
+                else:
+                    logger.debug(f"[CHAT] Quick handler returned None or too slow")
             except Exception as e:
-                logger.warning(f"Quick handler failed: {e}")
+                logger.warning(f"[CHAT] Quick handler failed: {e}")
+        else:
+            logger.debug("[CHAT] No quick handler configured")
         
         # 2. 进入慢速任务队列
         if self.slow_handler:
+            logger.debug("[CHAT] Submitting to slow task queue...")
             task = await self.queue.submit(
                 self._wrap_slow_handler(text),
                 priority=TaskPriority.NORMAL,
                 task_type="chat",
                 callback=self._on_task_complete,
                 progress_callback=self._on_task_progress,
-                timeout=300,  # 5分钟超时
+                timeout=300,
                 user_id=self.context.user_id,
                 chat_id=self.context.chat_id,
                 platform=self.context.platform,
@@ -128,13 +169,18 @@ class ChatSession:
                 payload={'original_text': text}
             )
             
+            logger.debug(f"[CHAT] Task created: {task.id}")
+            
             # 保存通知回调
             if self.notify_callback:
                 self._task_callbacks[task.id] = self.notify_callback
             
             return ChatResponse.task_created(task.id)
+        else:
+            logger.debug("[CHAT] No slow handler configured")
         
         # 3. 都没有处理器，返回默认响应
+        logger.debug("[CHAT] Returning default response")
         return ChatResponse.quick(f"收到: {text}")
     
     async def _try_quick_handle(self, text: str) -> Optional[str]:
@@ -142,7 +188,12 @@ class ChatSession:
         if not self.quick_handler:
             return None
         
-        result = self.quick_handler(text, context=self.context)
+        # 传递历史和上下文
+        result = self.quick_handler(
+            text, 
+            context=self.context,
+            history=self.get_history(limit=5)
+        )
         
         # 如果是协程，等待结果
         if asyncio.iscoroutine(result):
@@ -152,15 +203,36 @@ class ChatSession:
     
     def _wrap_slow_handler(self, text: str) -> Callable:
         """包装慢速处理器"""
-        def wrapper(_task: Task = None):
+        async def wrapper(_task: Task = None):
             if self.slow_handler:
-                return self.slow_handler(text, context=self.context, task=_task)
+                # 获取当前历史快照
+                history = self.get_history(limit=10)
+                
+                # 检查 handler 是否是协程
+                result = self.slow_handler(
+                    text, 
+                    context=self.context, 
+                    task=_task,
+                    history=history
+                )
+                if asyncio.iscoroutine(result):
+                    result = await result
+                
+                # 如果是字符串结果，记录到历史
+                if isinstance(result, str):
+                    self.add_message("assistant", result)
+                
+                return result
             return None
         return wrapper
     
     async def _on_task_complete(self, task: Task, result: TaskResult):
         """任务完成回调"""
         logger.info(f"Task {task.id} completed for user {task.user_id}")
+        
+        # 记录助手回复到历史
+        if result.success and result.output:
+            self.add_message("assistant", str(result.output))
         
         # 调用保存的通知回调
         if task.id in self._task_callbacks:
@@ -283,4 +355,3 @@ class ChatSessionManager:
             'active_sessions': len(self._sessions),
             'sessions_by_platform': {}
         }
-

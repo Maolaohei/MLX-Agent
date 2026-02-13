@@ -5,7 +5,7 @@ Type-safe configuration using Pydantic
 """
 
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 
 import yaml
 from pydantic import BaseModel, Field
@@ -50,24 +50,73 @@ class PlatformsConfig(BaseModel):
     discord: PlatformConfig = PlatformConfig()
 
 
-class LLMConfig(BaseModel):
-    """LLM provider configuration"""
-    provider: str = "openai"  # openai, anthropic, deepseek, qwen
+class LLMModelConfig(BaseModel):
+    """Single LLM model configuration"""
+    provider: str = "openai"
     api_key: Optional[str] = None
     api_base: Optional[str] = None
+    auth_token: Optional[str] = None
     model: str = "gpt-4o-mini"
     temperature: float = 0.7
     max_tokens: int = 2000
     
     def model_post_init(self, __context):
-        """Expand environment variables in api_key and api_base"""
+        """Expand environment variables"""
         import os
         if self.api_key and self.api_key.startswith('${') and self.api_key.endswith('}'):
             env_var = self.api_key[2:-1]
             self.api_key = os.environ.get(env_var)
-        if self.api_base and self.api_base.startswith('${') and self.api_base.endswith('}'):
-            env_var = self.api_base[2:-1]
-            self.api_base = os.environ.get(env_var)
+        if self.auth_token and self.auth_token.startswith('${') and self.auth_token.endswith('}'):
+            env_var = self.auth_token[2:-1]
+            self.auth_token = os.environ.get(env_var)
+
+
+class FailoverConfig(BaseModel):
+    """Failover configuration"""
+    enabled: bool = True
+    max_retries: int = 2
+    timeout: int = 30
+
+
+class LLMConfig(BaseModel):
+    """LLM provider configuration (supporting multi-model)"""
+    # 兼容旧配置：直接作为字段
+    provider: Optional[str] = None
+    api_key: Optional[str] = None
+    api_base: Optional[str] = None
+    auth_token: Optional[str] = None
+    model: Optional[str] = None
+    temperature: Optional[float] = None
+    max_tokens: Optional[int] = None
+    
+    # 新配置：主备模型
+    primary: Optional[LLMModelConfig] = None
+    fallback: Optional[LLMModelConfig] = None
+    failover: FailoverConfig = FailoverConfig()
+    
+    def model_post_init(self, __context):
+        """Expand environment variables and handle compatibility"""
+        import os
+        
+        # 处理旧配置的变量替换
+        if self.api_key and self.api_key.startswith('${') and self.api_key.endswith('}'):
+            env_var = self.api_key[2:-1]
+            self.api_key = os.environ.get(env_var)
+        if self.auth_token and self.auth_token.startswith('${') and self.auth_token.endswith('}'):
+            env_var = self.auth_token[2:-1]
+            self.auth_token = os.environ.get(env_var)
+            
+        # 如果 primary 为空但旧字段有值，尝试构建 primary
+        if not self.primary and self.api_key:
+            self.primary = LLMModelConfig(
+                provider=self.provider or "openai",
+                api_key=self.api_key,
+                api_base=self.api_base,
+                auth_token=self.auth_token,
+                model=self.model or "gpt-4o-mini",
+                temperature=self.temperature or 0.7,
+                max_tokens=self.max_tokens or 2000
+            )
 
 
 class PerformanceConfig(BaseModel):

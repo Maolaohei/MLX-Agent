@@ -22,20 +22,31 @@ console = Console()
 @click.group()
 @click.version_option(version=__version__, prog_name="mlx-agent")
 @click.option("--config", "-c", help="配置文件路径")
-@click.option("--verbose", "-v", is_flag=True, help="详细输出")
+@click.option("--verbose", "-v", is_flag=True, help="详细输出(DEBUG级别)")
+@click.option("--log-file", "-l", default="/tmp/mlx-agent-debug.log", help="日志文件路径")
 @click.pass_context
-def cli(ctx, config, verbose):
+def cli(ctx, config, verbose, log_file):
     """MLX-Agent - 高性能 AI Agent 系统"""
     ctx.ensure_object(dict)
     ctx.obj["config_path"] = config
     
-    # 配置日志
-    if verbose:
-        logger.remove()
-        logger.add(sys.stderr, level="DEBUG")
-    else:
-        logger.remove()
-        logger.add(sys.stderr, level="INFO")
+    # 配置日志 - 默认DEBUG级别用于排查问题
+    logger.remove()
+    log_level = "DEBUG"  # 始终使用DEBUG级别
+    
+    # 添加控制台输出 - 只显示ERROR及以上
+    logger.add(sys.stderr, level="ERROR")
+    
+    # 添加文件输出 - DEBUG级别记录所有信息
+    logger.add(
+        log_file,
+        level="DEBUG",
+        rotation="10 MB",
+        retention="3 days",
+        format="{time:YYYY-MM-DD HH:mm:ss.SSS} | {level: <8} | {name}:{function}:{line} | {message}"
+    )
+    
+    logger.info(f"MLX-Agent 启动 - 日志文件: {log_file}")
 
 
 @cli.command()
