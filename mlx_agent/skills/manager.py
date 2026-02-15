@@ -160,6 +160,7 @@ class PluginToolWrapper:
     def __init__(self, name: str, plugin: BasePlugin):
         self._name = name
         self._plugin = plugin
+        self._schema = None
     
     @property
     def name(self) -> str:
@@ -168,6 +169,27 @@ class PluginToolWrapper:
     @property
     def description(self) -> str:
         return f"Plugin tool from {self._plugin._metadata.name}"
+    
+    def get_schema(self) -> dict:
+        """获取工具的 OpenAI Schema"""
+        if self._schema is None:
+            # 从插件的 define_tools() 中查找对应工具的 schema
+            for tool_schema in self._plugin.define_tools():
+                func_name = tool_schema.get("function", {}).get("name")
+                if func_name == self._name:
+                    self._schema = tool_schema
+                    break
+            else:
+                # 如果没找到，返回一个基本 schema
+                self._schema = {
+                    "type": "function",
+                    "function": {
+                        "name": self._name,
+                        "description": self.description,
+                        "parameters": {"type": "object", "properties": {}}
+                    }
+                }
+        return self._schema
     
     async def execute(self, **params):
         """执行插件工具"""
