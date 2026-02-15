@@ -52,7 +52,8 @@ class LLMClient:
         tools: Optional[List[Dict]] = None,
         tool_choice: Optional[Union[str, Dict]] = None,
         force_model: Optional[str] = None,
-        reasoning: bool = False
+        reasoning: bool = False,
+        auto_reasoning: bool = True
     ) -> Dict[str, Any]:
         """调用聊天接口，支持工具调用和故障转移
         
@@ -64,10 +65,16 @@ class LLMClient:
             tool_choice: 工具选择策略 ("auto", "none", 或指定工具)
             force_model: 强制使用指定模型 (primary/fallback)
             reasoning: 是否启用深度思考模式 (Kimi k2.5 支持)
+            auto_reasoning: 是否自动根据工具调用启用思考模式 (默认 True)
             
         Returns:
             完整消息对象 (Dict)，包含 content 和 tool_calls
         """
+        # 自动思考模式: 如果有工具，自动启用思考模式
+        if auto_reasoning and not reasoning:
+            if tools and len(tools) > 0:
+                reasoning = True
+                logger.debug(f"Auto-enabling reasoning mode (tools={len(tools)})")
         # 如果强制指定模型
         if force_model == "fallback" and self.fallback_config:
             config = self.fallback_config
@@ -114,7 +121,8 @@ class LLMClient:
         tools: Optional[List[Dict]] = None,
         tool_choice: Optional[Union[str, Dict]] = None,
         reasoning: bool = False,
-        force_model: Optional[str] = None
+        force_model: Optional[str] = None,
+        auto_reasoning: bool = True
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """流式调用聊天接口
         
@@ -126,6 +134,7 @@ class LLMClient:
             tool_choice: 工具选择策略
             reasoning: 是否启用思考模式
             force_model: 强制使用指定模型
+            auto_reasoning: 是否自动根据工具调用启用思考模式 (默认 True)
             
         Yields:
             流式响应片段，格式:
@@ -135,6 +144,12 @@ class LLMClient:
             - {"type": "done", "finish_reason": "..."}
             - {"type": "error", "error": "..."}
         """
+        # 自动思考模式: 如果有工具，自动启用思考模式
+        if auto_reasoning and not reasoning:
+            if tools and len(tools) > 0:
+                reasoning = True
+                logger.debug(f"Auto-enabling reasoning mode for stream (tools={len(tools)})")
+        
         config = self.fallback_config if force_model == "fallback" and self.fallback_config else self.current_config
         
         # 指数退避重试
