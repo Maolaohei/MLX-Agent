@@ -1002,6 +1002,7 @@ class MLXAgent:
             return ""
         
         capabilities = []
+        tool_mappings = []  # 用于告诉 LLM 什么情况下调用什么工具
         
         # 获取所有插件的工具
         plugin_tools = self.plugin_manager.get_all_tools()
@@ -1032,10 +1033,18 @@ class MLXAgent:
             capabilities.append("• API管理: 可管理API密钥的添加/查询/轮换")
         if 'briefing' in plugin_caps:
             capabilities.append("• 每日晨报: 可生成每日简报，包含天气、系统状态")
+            tool_mappings.append("- 当用户询问天气时，调用 briefing_generate 工具")
         if 'remindme' in plugin_caps:
             capabilities.append("• 智能提醒: 可设置定时提醒，支持自然语言如'10分钟后'、'明天下午3点'")
+            tool_mappings.append("- 当用户要求设置提醒时，调用 reminder_add 工具")
         
-        if capabilities:
-            return "你可以使用以下技能:\n" + "\n".join(capabilities) + "\n\n当用户需要这些功能时，主动使用对应工具，无需询问。"
+        result = "你可以使用以下技能:\n" + "\n".join(capabilities)
+        
+        if tool_mappings:
+            result += "\n\n【重要：工具调用指引】\n" + "\n".join(tool_mappings)
+        
+        result += "\n\n当用户需要这些功能时，你必须调用对应工具，不要只是口头回答。"
+        
+        return result
         
         return ""
