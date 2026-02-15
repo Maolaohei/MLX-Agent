@@ -24,10 +24,10 @@ memory:
     p1_max_age_days: 7
     p2_max_age_days: 1
 
-# 平台配置 (默认关闭)
+# 平台配置
 platforms:
   telegram:
-    enabled: false
+    enabled: true
     bot_token: "${TELEGRAM_BOT_TOKEN}"
     admin_user_id: "${TELEGRAM_ADMIN_ID}"
   
@@ -62,9 +62,9 @@ llm:
 
 # 健康检查
 health_check:
-  enabled: true
+  enabled: false
   host: "127.0.0.1"
-  port: 18080
+  port: 18081
 
 # 优雅关闭
 shutdown:

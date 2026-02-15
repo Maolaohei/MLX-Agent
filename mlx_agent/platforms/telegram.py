@@ -411,6 +411,78 @@ class TelegramAdapter:
         except Exception as e:
             logger.debug(f"Failed to send typing: {e}")
     
+    def _format_message(self, text: str) -> str:
+        """美化消息格式
+        
+        - 优化标题层级
+        - 美化代码块
+        - 优化列表显示
+        - 添加适当的 emoji
+        """
+        if not text:
+            return text
+        
+        lines = text.split('\n')
+        formatted_lines = []
+        in_code_block = False
+        
+        for line in lines:
+            # 检测代码块
+            if line.strip().startswith('```'):
+                in_code_block = not in_code_block
+                formatted_lines.append(line)
+                continue
+            
+            if in_code_block:
+                formatted_lines.append(line)
+                continue
+            
+            # 美化标题
+            if line.startswith('# ') and not line.startswith('## '):
+                # 一级标题
+                title = line[2:].strip()
+                formatted_lines.append(f"🎯 *{title}*")
+            elif line.startswith('## '):
+                # 二级标题
+                title = line[3:].strip()
+                formatted_lines.append(f"📌 *{title}*")
+            elif line.startswith('### '):
+                # 三级标题
+                title = line[4:].strip()
+                formatted_lines.append(f"▫️ *{title}*")
+            
+            # 美化分隔线
+            elif line.strip() == '---' or line.strip() == '___':
+                formatted_lines.append('─' * 20)
+            
+            # 美化列表项
+            elif line.strip().startswith('- ') or line.strip().startswith('* '):
+                content = line.strip()[2:]
+                # 根据内容添加 emoji
+                if '错误' in content or '失败' in content or '❌' in content:
+                    formatted_lines.append(f"  ❌ {content}")
+                elif '成功' in content or '完成' in content or '✅' in content:
+                    formatted_lines.append(f"  ✅ {content}")
+                elif '警告' in content or '⚠️' in content:
+                    formatted_lines.append(f"  ⚠️ {content}")
+                elif '提示' in content or '💡' in content:
+                    formatted_lines.append(f"  💡 {content}")
+                else:
+                    formatted_lines.append(f"  • {content}")
+            
+            # 美化表格行
+            elif '|' in line and not line.strip().startswith('```'):
+                # 简化表格显示
+                cells = [c.strip() for c in line.split('|') if c.strip()]
+                if cells and not all(c in '-:|' for c in line.strip()):
+                    formatted_lines.append('  ' + ' | '.join(cells))
+            
+            # 其他行保持不变
+            else:
+                formatted_lines.append(line)
+        
+        return '\n'.join(formatted_lines)
+    
     async def send_message(
         self,
         chat_id: str,
@@ -435,9 +507,12 @@ class TelegramAdapter:
             return False
         
         try:
+            # 美化消息格式
+            formatted_text = self._format_message(text)
+            
             # 分割长消息
             max_length = 4096
-            parts = [text[i:i+max_length] for i in range(0, len(text), max_length)]
+            parts = [formatted_text[i:i+max_length] for i in range(0, len(formatted_text), max_length)]
             
             for i, part in enumerate(parts):
                 kwargs = {

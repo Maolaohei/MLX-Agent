@@ -403,7 +403,7 @@ class MLXAgent:
         
         self.skill_manager = SkillManager()
         await self.skill_manager.initialize(self)
-        self.tool_executor = ToolExecutor(self.skill_manager)
+        self.tool_executor = ToolExecutor(self.skill_manager, agent=self)
         
         native_tools = get_available_tools()
         logger.info(f"Skill system initialized with {len(native_tools)} native tools")
@@ -531,11 +531,6 @@ class MLXAgent:
                     return f"📋 你的任务 ({len(tasks)}):\n{task_list}"
                 return "📋 当前没有进行中的任务"
         
-        # 简单的问候语
-        greetings = ['hello', 'hi', '你好', '您好', '在吗', '在？']
-        if any(g in text_lower for g in greetings):
-            return "👋 你好！我是 MLX-Agent，有什么可以帮你的吗？"
-        
         # 短消息使用 LLM 回复
         if len(text) < 50 and self.llm:
             try:
@@ -580,7 +575,13 @@ class MLXAgent:
                 logger.warning(f"Memory search failed: {e}")
         
         # 构建系统提示
-        base_prompt = "你是 MLX-Agent，一个强大的 AI 助手。请保持对话连贯性，参考之前的对话历史。"
+        base_prompt = """你是 MLX-Agent，一个强大的 AI 助手。请保持对话连贯性，参考之前的对话历史。
+
+【重要规则】
+1. 当工具返回错误信息时，你必须将错误内容原样展示给用户，不要隐瞒或修改
+2. 错误信息中通常包含原因分析和解决方案，请帮助用户理解
+3. 如果错误提示需要联系管理员，请明确告知用户
+"""
         
         # 添加插件技能说明到系统提示
         plugin_capabilities = self._get_plugin_capabilities_text()
@@ -687,37 +688,54 @@ class MLXAgent:
                             import json
                             arguments = json.loads(arguments)
                         
-                        # 首先尝试技能系统的工具
+                        # 判断工具属于哪个系统，然后调用
                         result = None
-                        if self.tool_executor:
-                            try:
-                                result = await self.tool_executor.execute(
-                                    function_name,
-                                    arguments,
-                                    context or {}
-                                )
-                            except Exception:
-                                result = None
                         
-                        # 如果技能系统没有该工具，尝试插件系统
-                        if result is None and self.plugin_manager:
-                            result = await self.plugin_manager.handle_tool(
+                        # 检查是否是技能系统的原生工具
+                        is_native_tool = False
+                        if self.skill_manager:
+                            from .tools import get_available_tools
+                            is_native_tool = function_name in get_available_tools()
+                        
+                        if is_native_tool and self.tool_executor:
+                            # 调用技能系统
+                            result = await self.tool_executor.execute(
+                                function_name,
+                                arguments,
+                                context or {}
+                            )
+                        elif self.plugin_manager:
+                            # 调用插件系统
+                            plugin_result = await self.plugin_manager.handle_tool(
                                 function_name,
                                 arguments
                             )
                             # 统一输出格式
-                            if isinstance(result, dict):
-                                if result.get("success"):
-                                    result = {"success": True, "output": result.get("message") or result.get("data") or str(result)}
+                            if isinstance(plugin_result, dict):
+                                if plugin_result.get("success"):
+                                    result = {
+                                        "success": True,
+                                        "output": plugin_result.get("message") or plugin_result.get("data") or str(plugin_result)
+                                    }
                                 else:
-                                    result = {"success": False, "error": result.get("error", "Unknown error")}
+                                    result = {
+                                        "success": False,
+                                        "error": plugin_result.get("error", "Unknown error")
+                                    }
+                            else:
+                                result = {"success": True, "output": str(plugin_result)}
                         
                         if result is None:
-                            tool_output = f"Error: Tool '{function_name}' not found"
+                            tool_output = f"这个功能暂时没法用，可能还没准备好..."
+                        elif result.get("success"):
+                            tool_output = result.get("output", "")
                         else:
-                            tool_output = result.get("output") if result.get("success") else f"Error: {result.get('error')}"
+                            # 获取错误信息并自然展示
+                            error_msg = result.get('error', '出了点问题')
+                            tool_output = error_msg
+                            
                     except Exception as e:
-                        tool_output = f"Execution failed: {str(e)}"
+                        tool_output = f"执行这个功能时遇到了些麻烦... 错误: {str(e)[:100]}"
                     
                     messages.append({
                         "role": "tool",
@@ -923,7 +941,7 @@ class MLXAgent:
         return notify_callback
     
     async def _legacy_handle_message(self, platform: str, user_id: str, text: str) -> str:
-        """传统的消息处理方式（降级方案）"""
+        """传统的消息处理方式 (降级方案) """
         try:
             memories = await self.memory.search(text, limit=5) if self.memory else []
             memory_context = self._format_memories(memories[:3])
@@ -993,7 +1011,7 @@ class MLXAgent:
         return stats
     
     def _get_plugin_capabilities_text(self) -> str:
-        """获取插件能力描述文本，用于注入系统提示
+        """获取插件能力描述文本, 用于注入系统提示
         
         Returns:
             插件技能描述文本
@@ -1046,5 +1064,3 @@ class MLXAgent:
         result += "\n\n当用户需要这些功能时，你必须调用对应工具，不要只是口头回答。"
         
         return result
-        
-        return ""

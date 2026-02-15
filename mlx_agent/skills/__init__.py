@@ -69,11 +69,12 @@ class ToolExecutor:
     - 熔断器保护
     - 指数退避重试
     - 优雅降级
-    - 友好错误消息
+    - 友好错误消息 (支持人设动态生成)
     """
     
-    def __init__(self, skill_manager: SkillManager):
+    def __init__(self, skill_manager: SkillManager, agent=None):
         self.skill_manager = skill_manager
+        self.agent = agent  # 用于获取人设信息
         self.circuit_breaker = CircuitBreaker()
         self.execution_stats: Dict[str, Dict] = {}
     
@@ -133,23 +134,142 @@ class ToolExecutor:
             "error": "Max retries exceeded"
         }
     
-    async def _fallback(self, tool_name: str, arguments: Dict, context: Dict, error: str) -> Dict[str, Any]:
-        """优雅降级"""
-        logger.info(f"Tool {tool_name} failed, trying fallback...")
+    def _generate_error_message(self, error_type: str, error_detail: str, requires_admin: bool) -> str:
+        """根据人设动态生成错误提示"""
+        import random
         
-        # 降级策略 1: 使用替代工具
-        fallbacks = {
-            "web_search": "搜索功能暂时不可用",
-            "browser": "浏览器功能暂时不可用",
-            "execute_code": "代码执行功能暂时不可用"
+        # 尝试从 agent 获取人设信息
+        identity_vibe = ""
+        speaking_style = ""
+        if self.agent and hasattr(self.agent, 'identity') and self.agent.identity:
+            try:
+                identity_vibe = self.agent.identity.identity.get('vibe', '')
+                speaking_style = self.agent.identity.identity.get('speaking_style', '')
+                soul_content = self.agent.identity.soul or ""
+            except:
+                pass
+        
+        # 根据人设风格选择语气
+        # 检测古风/玄幻风格
+        is_fantasy = any(kw in (identity_vibe + speaking_style).lower() for kw in 
+                        ['古风', '玄幻', '仙侠', '修仙', '道家', '佛家', '妖', '魔', '仙', '神', '鬼', '怪'])
+        
+        # 检测傲娇/萌系风格
+        is_moe = any(kw in (identity_vibe + speaking_style).lower() for kw in 
+                    ['傲娇', '萌', '可爱', '甜', '软', '喵', '汪', '兽', '娘'])
+        
+        # 检测高冷/冷酷风格
+        is_cold = any(kw in (identity_vibe + speaking_style).lower() for kw in 
+                     ['高冷', '冷酷', '冷', '酷', '拽', '傲', '霸', '帝', '王'])
+        
+        # 基础错误信息模板
+        error_info = {
+            "api_key_missing": {
+                "problem": "需要API密钥但未配置",
+                "action": "联系管理员配置API Key"
+            },
+            "network_error": {
+                "problem": "网络连接不稳定", 
+                "action": "稍后重试或检查网络"
+            },
+            "service_unavailable": {
+                "problem": "服务器暂时不可用",
+                "action": "稍后重试"
+            },
+            "quota_exceeded": {
+                "problem": "达到使用限额",
+                "action": "联系管理员升级或等待重置"
+            },
+            "configuration_error": {
+                "problem": "配置有误",
+                "action": "联系管理员检查配置"
+            },
+            "unknown_error": {
+                "problem": "出现未知问题",
+                "action": "联系管理员查看日志"
+            }
         }
         
-        friendly_message = fallbacks.get(tool_name, f"工具 {tool_name} 暂时不可用")
+        info = error_info.get(error_type, error_info["unknown_error"])
+        
+        # 根据人设生成不同风格的提示
+        if is_fantasy:
+            # 古风/玄幻风格
+            fantasy_templates = [
+                f"啧...{info['problem']}，此术暂且施展不得。{info['action']}后方可如常。",
+                f"唉，{info['problem']}，灵力受阻。{info['action']}罢。",
+                f"{info['problem']}，阵法未全。{info['action']}，自可运转。"
+            ]
+            return random.choice(fantasy_templates)
+        
+        elif is_moe:
+            # 傲娇/萌系风格
+            moe_templates = [
+                f"哼...{info['problem']}啦，才不是因为想帮你呢！{info['action']}就好啦~",
+                f"哎呀，{info['problem']}...{info['action']}嘛，快点解决啦！",
+                f"真是的，{info['problem']}...{info['action']}就能用了，不、不要误会哦！"
+            ]
+            return random.choice(moe_templates)
+        
+        elif is_cold:
+            # 高冷/冷酷风格
+            cold_templates = [
+                f"{info['problem']}。{info['action']}。",
+                f"{info['problem']}，自行解决。",
+                f"{info['action']}。"
+            ]
+            return random.choice(cold_templates)
+        
+        else:
+            # 默认友好风格
+            default_templates = [
+                f"哎呀，{info['problem']}...{info['action']}就好啦~",
+                f"{info['problem']}，暂时没法用呢。{info['action']}解决一下？",
+                f"出了点小状况：{info['problem']}。{info['action']}应该就能用了~"
+            ]
+            return random.choice(default_templates)
+    
+    async def _fallback(self, tool_name: str, arguments: Dict, context: Dict, error: str) -> Dict[str, Any]:
+        """优雅降级 - 带人设的错误报告"""
+        logger.info(f"Tool {tool_name} failed, trying fallback...")
+        
+        # 分析错误类型
+        error_lower = error.lower()
+        error_type = "unknown_error"
+        requires_admin = False
+        
+        # API Key 相关错误
+        if any(kw in error_lower for kw in ['api key', 'apikey', 'api_key', 'unauthorized', '401', '403']):
+            error_type = "api_key_missing"
+            requires_admin = True
+        
+        # 网络连接错误
+        elif any(kw in error_lower for kw in ['connection', 'network', 'timeout', 'connect', 'dns', 'unreachable']):
+            error_type = "network_error"
+        
+        # 服务不可用
+        elif any(kw in error_lower for kw in ['service unavailable', '503', '502', 'bad gateway', 'maintenance']):
+            error_type = "service_unavailable"
+        
+        # 配额/限制错误
+        elif any(kw in error_lower for kw in ['quota', 'rate limit', 'too many requests', '429', 'limit exceeded']):
+            error_type = "quota_exceeded"
+            requires_admin = True
+        
+        # 配置错误
+        elif any(kw in error_lower for kw in ['config', 'configuration', 'env', 'environment', 'not set']):
+            error_type = "configuration_error"
+            requires_admin = True
+        
+        # 根据人设动态生成错误提示
+        message = self._generate_error_message(error_type, error, requires_admin)
         
         return {
             "success": False,
             "output": None,
-            "error": f"{friendly_message}，原因: {error}"
+            "error": message,
+            "error_type": error_type,
+            "requires_admin": requires_admin
         }
 
 
