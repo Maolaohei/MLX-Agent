@@ -23,8 +23,7 @@ from .memory import ChromaMemorySystem
 from .memory.consolidation import MemoryConsolidator
 from .identity import IdentityManager
 from .compression import TokenCompressor
-from .skills import SkillRegistry
-from .skills.compat.openclaw import OpenClawSkillAdapter
+from .skills import SkillManager, ToolExecutor
 from .tasks import TaskQueue, TaskWorker, TaskExecutor, TaskPriority, Task, TaskResult
 from .chat import ChatSessionManager, ChatResponse
 from .llm import LLMClient
@@ -84,8 +83,8 @@ class MLXAgent:
         self.consolidator: Optional[MemoryConsolidator] = None
         self.identity: Optional[IdentityManager] = None
         self.compressor: Optional[TokenCompressor] = None
-        self.skills: Optional[SkillRegistry] = None
-        self.openclaw_skills: Optional[OpenClawSkillAdapter] = None
+        self.skill_manager: Optional[SkillManager] = None
+        self.tool_executor: Optional[ToolExecutor] = None
         self.telegram: Optional[Any] = None
         self.api_manager: Optional[APIManager] = None
         self.health_server: Optional[HealthCheckServer] = None
@@ -220,10 +219,10 @@ class MLXAgent:
             ))
         
         # 4. 关闭技能系统
-        if self.skills:
+        if self.skill_manager:
             logger.info("Closing skills...")
             shutdown_tasks.append(asyncio.create_task(
-                self._safe_stop("skills", self.skills.close())
+                self._safe_stop("skills", self._close_skills())
             ))
         
         # 5. 关闭 LLM 客户端
@@ -375,16 +374,24 @@ class MLXAgent:
             raise
     
     async def _init_skills(self):
-        """初始化技能系统"""
-        self.skills = SkillRegistry(self)
-        await self.skills.initialize()
-        logger.info("Skill system initialized")
+        """初始化技能系统 - 原生工具版"""
+        from .tools import tool_registry, get_available_tools
         
-        # OpenClaw 兼容层
-        self.openclaw_skills = OpenClawSkillAdapter()
-        await self.openclaw_skills.initialize()
-        oc_skills = self.openclaw_skills.list_skills()
-        logger.info(f"OpenClaw adapter initialized with {len(oc_skills)} skills")
+        self.skill_manager = SkillManager()
+        await self.skill_manager.initialize(self)
+        self.tool_executor = ToolExecutor(self.skill_manager)
+        
+        native_tools = get_available_tools()
+        logger.info(f"Skill system initialized with {len(native_tools)} native tools")
+    
+    async def _close_skills(self):
+        """关闭技能系统"""
+        if self.skill_manager:
+            for name, plugin in self.skill_manager.plugins.items():
+                try:
+                    await plugin.on_unload()
+                except Exception as e:
+                    logger.warning(f"Error unloading plugin {name}: {e}")
     
     async def _init_task_system(self):
         """初始化任务系统"""
@@ -455,8 +462,7 @@ class MLXAgent:
                 f"• Agent: {'运行中' if stats['running'] else '已停止'}\n"
                 f"• 任务队列: {queue_stats.get('pending', 0)} 等待 / "
                 f"{queue_stats.get('running', 0)} 执行中\n"
-                f"• Skills: {stats['skills']['native']} 原生 / "
-                f"{stats['skills']['openclaw']} OpenClaw"
+                f"• Tools: {stats['skills']['native']} 原生工具"
             )
         
         # 任务列表命令
@@ -548,9 +554,9 @@ class MLXAgent:
         
         # 获取可用工具
         tools = None
-        if self.skills:
+        if self.skill_manager:
             try:
-                tools = self.skills.get_tools_schema()
+                tools = self.skill_manager.get_all_tools_schema()
             except Exception as e:
                 logger.error(f"Failed to get tools: {e}")
         
@@ -603,13 +609,17 @@ class MLXAgent:
                     call_id = tool_call.get("id")
                     
                     try:
-                        result = await self.skills.execute_tool_call(
-                            tool_call,
-                            user_id=context.get("user_id") if context else None,
-                            chat_id=context.get("chat_id") if context else None,
-                            platform=context.get("platform") if context else None
+                        arguments = tool_call.get("function", {}).get("arguments", {})
+                        if isinstance(arguments, str):
+                            import json
+                            arguments = json.loads(arguments)
+                        
+                        result = await self.tool_executor.execute(
+                            function_name,
+                            arguments,
+                            context or {}
                         )
-                        tool_output = result.output if result.success else f"Error: {result.error}"
+                        tool_output = result.get("output") if result.get("success") else f"Error: {result.get('error')}"
                     except Exception as e:
                         tool_output = f"Execution failed: {str(e)}"
                     
@@ -873,8 +883,7 @@ class MLXAgent:
             'running': self._running,
             'identity': self.identity.get_identity_summary() if self.identity else None,
             'skills': {
-                'native': len(self.skills.skills) if self.skills else 0,
-                'openclaw': len(self.openclaw_skills.skills) if self.openclaw_skills else 0
+                'native': len(self.skill_manager.plugins) if self.skill_manager else 0
             },
             'memory': self.memory.get_stats() if self.memory else None,
             'tasks': self.task_queue.get_stats() if self.task_queue else None,

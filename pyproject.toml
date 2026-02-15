@@ -59,7 +59,10 @@ dependencies = [
     # HTTP 客户端
     "httpx>=0.25.0",
     
-    # 工具
+    # 工具依赖
+    "duckduckgo-search>=3.9.0",  # 搜索
+    "readability-lxml>=0.8.1",   # 网页解析
+    "aiofiles>=23.2.0",          # 异步文件操作
     "click>=8.1.0",
     "rich>=13.7.0",
     "python-dotenv>=1.0.0",
