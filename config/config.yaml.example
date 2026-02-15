@@ -1,50 +1,125 @@
 # MLX-Agent Configuration Template
 
 name: "MLX-Agent"
-version: "0.1.0"
+version: "0.3.0"
 debug: false
 
 # Performance optimization
 performance:
   use_uvloop: true
   json_library: orjson
-  max_workers: 10
+  max_workers: 4
 
-# Memory system (index1-based, BM25 + Vector hybrid search)
+# Memory system (三后端支持)
 memory:
-  # Storage paths
-  path: ./memory
-  index_path: ./memory/.index
+  # 后端选择: "chroma" (高性能) | "sqlite" (轻量级) | "hybrid" (混合+自动降级)
+  # - chroma: 推荐用于生产环境，需要 100MB+ 内存
+  # - sqlite: 零额外依赖，仅需 20MB 内存，适合边缘设备
+  # - hybrid: ChromaDB + SQLite 功能分工，内存不足时自动降级为纯 SQLite
+  provider: hybrid
   
-  # Embedding model (via Ollama)
-  embedding_model: bge-m3
-  ollama_url: http://localhost:11434
+  # Hybrid 配置 (provider=hybrid 时使用)
+  # 功能分工：
+  # - ChromaDB: 向量存储和语义搜索
+  # - SQLite: 关键词索引、元数据、缓存
+  # - 内存不足 (<500MB) 时自动降级为纯 SQLite 模式
+  hybrid:
+    mode: "functional"  # 功能分工模式
+    
+    # ChromaDB 配置 (向量存储)
+    chroma:
+      path: ./memory/chroma
+      embedding_provider: local
+      embedding_model: BAAI/bge-m3
+      ollama_url: http://localhost:11434
+      openai_api_key: ${OPENAI_API_KEY}
+    
+    # SQLite 配置 (关键词索引)
+    sqlite:
+      path: ./memory/hybrid.db
+      embedding_provider: local
+      embedding_model: BAAI/bge-m3
+    
+    # RRF 合并参数
+    rrf_k: 60
+    
+    # 内存监控与降级
+    memory_threshold_mb: 500  # 可用内存 < 500MB 时降级
+    memory_check_interval: 60
+    fallback_mode: auto  # auto | never | always
   
-  # Indexing options
-  force_reindex: false
-  index_on_startup: true
+  # ChromaDB 配置 (provider=chroma 时使用)
+  chroma:
+    path: ./memory/chroma
+    embedding_provider: local  # local, openai, ollama
+    embedding_model: BAAI/bge-m3
+    ollama_url: http://localhost:11434
+    openai_api_key: ${OPENAI_API_KEY}
+  
+  # SQLite 配置 (provider=sqlite 时使用)
+  sqlite:
+    path: ./memory/memory.db
+    embedding_provider: local  # local, openai
+    embedding_model: BAAI/bge-m3
+    openai_api_key: ${OPENAI_API_KEY}
+    # 混合搜索权重
+    vector_weight: 0.7      # 向量搜索权重
+    keyword_weight: 0.3     # 关键词搜索权重
+  
+  # 自动归档配置 (所有后端通用)
+  auto_archive:
+    enabled: true
+    interval_hours: 24
+    p1_max_age_days: 7    # P1 记忆保留7天
+    p2_max_age_days: 1    # P2 记忆保留1天
 
 # Platform configuration
 platforms:
   telegram:
-    enabled: false
-    # bot_token: "YOUR_BOT_TOKEN_HERE"
-    # webhook_url: "https://your-domain.com/webhook"
+    enabled: true
+    bot_token: ${TELEGRAM_BOT_TOKEN}
+    admin_user_id: ${TELEGRAM_ADMIN_ID}
     
   qqbot:
     enabled: false
-    # api_id: "YOUR_API_ID"
-    # api_hash: "YOUR_API_HASH"
     
   discord:
     enabled: false
-    # bot_token: "YOUR_BOT_TOKEN_HERE"
 
-# LLM configuration
+# LLM configuration - 多模型配置
 llm:
-  provider: openai
-  # api_key: "YOUR_API_KEY_HERE"
-  # api_base: "https://api.openai.com/v1"
-  model: gpt-4o-mini
-  temperature: 0.7
-  max_tokens: 2000
+  # 主模型 (kimi-k2.5)
+  primary:
+    provider: openai
+    api_key: ${OPENAI_API_KEY}
+    api_base: http://127.0.0.1:8317/v1
+    auth_token: ${AUTH_TOKEN}
+    model: kimi-k2.5
+    temperature: 0.7
+    max_tokens: 4000
+  
+  # 备用模型 (gemini-3-pro-preview)
+  fallback:
+    provider: openai
+    api_key: ${OPENAI_API_KEY}
+    api_base: http://127.0.0.1:8317/v1
+    auth_token: ${AUTH_TOKEN}
+    model: gemini-3-pro-preview
+    temperature: 0.7
+    max_tokens: 4000
+  
+  # 切换设置
+  failover:
+    enabled: true
+    max_retries: 3
+    timeout: 30
+
+# Health check server configuration
+health_check:
+  enabled: true
+  host: "0.0.0.0"
+  port: 8080
+
+# Shutdown configuration
+shutdown:
+  timeout_seconds: 30  # 优雅关闭超时
