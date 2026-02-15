@@ -573,7 +573,7 @@ class MLXAgent:
         memories = []
         if self.memory:
             try:
-                memories = await self.memory.search(text, top_k=3)
+                memories = await self.memory.search(text, limit=3)
                 if task:
                     task.set_progress("🔍 搜索相关记忆...", 0.3)
             except Exception as e:
@@ -759,7 +759,7 @@ class MLXAgent:
         # 搜索相关记忆
         if self.memory:
             try:
-                memories = await self.memory.search(text, top_k=3)
+                memories = await self.memory.search(text, limit=3)
                 if memories:
                     memory_context = "\n\n相关记忆:\n" + "\n".join([f"- {m.get('content', '')[:100]}" for m in memories[:3]])
                     system_prompt += memory_context
@@ -925,7 +925,7 @@ class MLXAgent:
     async def _legacy_handle_message(self, platform: str, user_id: str, text: str) -> str:
         """传统的消息处理方式（降级方案）"""
         try:
-            memories = await self.memory.search(text, top_k=5) if self.memory else []
+            memories = await self.memory.search(text, limit=5) if self.memory else []
             memory_context = self._format_memories(memories[:3])
             return f"收到: {text}\n\n相关记忆:\n{memory_context or '(无)'}"
         except Exception as e:
