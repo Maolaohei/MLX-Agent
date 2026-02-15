@@ -21,7 +21,7 @@ import asyncio
 import aiohttp
 from loguru import logger
 
-from .base import Plugin
+from ..base import Plugin
 
 
 @dataclass

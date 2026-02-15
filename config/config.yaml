@@ -1,272 +1,71 @@
-# MLX-Agent Configuration - v0.3.0
+# MLX-Agent 配置 - Phase 2 Ready
+# 版本: 0.3.0
 
 name: "MLX-Agent"
 version: "0.3.0"
 debug: true
 
-# Performance optimization
+# 性能优化
 performance:
   use_uvloop: true
   json_library: orjson
   max_workers: 4
 
-# Memory system (三后端支持)
+# 记忆系统
 memory:
-  # 后端选择: "chroma" | "sqlite" | "hybrid" | "tiered"
-  # - chroma: 推荐用于生产环境，需要 100MB+ 内存
-  # - sqlite: 零额外依赖，仅需 20MB 内存，适合边缘设备
-  # - hybrid: ChromaDB + SQLite 功能分工，内存不足时自动降级为纯 SQLite
-  # - tiered: 热/温/冷三层架构，优化存储和检索效率
-  provider: hybrid
-  
-  # Hybrid 配置 (provider=hybrid 时使用)
-  # 功能分工：
-  # - ChromaDB: 向量存储和语义搜索
-  # - SQLite: 关键词索引、元数据、缓存
-  # - 内存不足 (<500MB) 时自动降级为纯 SQLite 模式
-  hybrid:
-    mode: "functional"  # 功能分工模式
-    
-    # ChromaDB 配置 (向量存储)
-    chroma:
-      path: ./memory/chroma
-      embedding_provider: local
-      embedding_model: BAAI/bge-m3
-      ollama_url: http://localhost:11434
-      openai_api_key: ${OPENAI_API_KEY}
-    
-    # SQLite 配置 (关键词索引)
-    sqlite:
-      path: ./memory/hybrid.db
-      embedding_provider: local
-      embedding_model: BAAI/bge-m3
-    
-    # RRF 合并参数
-    rrf_k: 60
-    
-    # 内存监控与降级
-    memory_threshold_mb: 500  # 可用内存 < 500MB 时降级
-    memory_check_interval: 60
-    fallback_mode: auto  # auto | never | always
-  
-  # ChromaDB 配置 (provider=chroma 时使用)
-  chroma:
-    path: ./memory/chroma
-    embedding_provider: local  # local, openai, ollama
-    embedding_model: BAAI/bge-m3
-    ollama_url: http://localhost:11434
-    openai_api_key: ${OPENAI_API_KEY}
-  
-  # SQLite 配置 (provider=sqlite 时使用)
-  sqlite:
-    path: ./memory/memory.db
-    embedding_provider: local  # local, openai
-    embedding_model: BAAI/bge-m3
-    openai_api_key: ${OPENAI_API_KEY}
-    # 混合搜索权重
-    vector_weight: 0.7      # 向量搜索权重
-    keyword_weight: 0.3     # 关键词搜索权重
-  
-  # Tiered 三层架构配置 (provider=tiered 时使用)
-  # 热/温/冷三层存储，优化存储和检索效率
-  # - 热层 (Hot): ChromaDB - 活跃记忆，快速访问
-  # - 温层 (Warm): SQLite - 中期归档，关键词搜索
-  # - 冷层 (Cold): ChromaDB - 长期存档，深度检索
-  tiered:
-    hot_path: ./memory/hot          # 热层: ChromaDB (P0 + 7天内P1 + 1天内P2)
-    warm_path: ./memory/warm.db     # 温层: SQLite (7-30天P1)
-    cold_path: ./memory/cold        # 冷层: ChromaDB (30天+ P1/P2)
-    embedding_provider: local       # local, openai, ollama
-    auto_tiering: true              # 自动分层归档
-    # 分层阈值 (天)
-    hot_warm_threshold: 7           # P1: 7天后移到温层
-    warm_cold_threshold: 30         # P1: 30天后移到冷层
-    p2_archive_days: 1              # P2: 1天后归档到冷层
-  
-  # 自动归档配置 (所有后端通用)
+  path: "./memory"
+  embedding_provider: "local"
+  embedding_model: "BAAI/bge-m3"
+  chroma_path: "./memory/chroma"
+  ollama_url: "http://localhost:11434"
   auto_archive:
     enabled: true
     interval_hours: 24
-    p1_max_age_days: 7    # P1 记忆保留7天
-    p2_max_age_days: 1    # P2 记忆保留1天
+    p1_max_age_days: 7
+    p2_max_age_days: 1
 
-# Platform configuration
+# 平台配置 (默认关闭)
 platforms:
   telegram:
-    enabled: true
-    bot_token: ${TELEGRAM_BOT_TOKEN}
-    admin_user_id: ${TELEGRAM_ADMIN_ID}
-    
+    enabled: false
+    bot_token: "${TELEGRAM_BOT_TOKEN}"
+    admin_user_id: "${TELEGRAM_ADMIN_ID}"
+  
   qqbot:
     enabled: false
-    
+  
   discord:
     enabled: false
 
-# LLM configuration - 多模型配置
+# LLM 配置
 llm:
-  # 主模型 (kimi-k2.5)
   primary:
-    provider: openai
-    api_key: ${OPENAI_API_KEY}
-    api_base: http://127.0.0.1:8317/v1
-    auth_token: ${AUTH_TOKEN}
-    model: kimi-k2.5
+    provider: "openai"
+    api_key: "${OPENAI_API_KEY}"
+    api_base: "${OPENAI_API_BASE}"
+    model: "gpt-4o-mini"
     temperature: 0.7
     max_tokens: 4000
   
-  # 备用模型 (gemini-3-pro-preview)
   fallback:
-    provider: openai
-    api_key: ${OPENAI_API_KEY}
-    api_base: http://127.0.0.1:8317/v1
-    auth_token: ${AUTH_TOKEN}
-    model: gemini-3-pro-preview
+    provider: "openai"
+    api_key: "${OPENAI_API_KEY}"
+    api_base: "${OPENAI_API_BASE}"
+    model: "gpt-3.5-turbo"
     temperature: 0.7
     max_tokens: 4000
   
-  # 切换设置
   failover:
     enabled: true
     max_retries: 3
     timeout: 30
 
-# Health check server configuration
+# 健康检查
 health_check:
   enabled: true
-  host: "0.0.0.0"
-  port: 8080
+  host: "127.0.0.1"
+  port: 18080
 
-# Shutdown configuration
+# 优雅关闭
 shutdown:
-  timeout_seconds: 30  # 优雅关闭超时
-
-# =============================================================================
-# Plugin System Configuration (Phase 2 新特性)
-# 插件系统配置 - 支持热插拔功能扩展
-# =============================================================================
-plugins:
-  # -----------------------------------------------------------------------------
-  # backup-restore: 自动备份与恢复插件
-  # -----------------------------------------------------------------------------
-  backup-restore:
-    enabled: true                     # 是否启用此插件
-    # 备份调度配置 (cron 表达式)
-    # 格式: 分 时 日 月 周
-    # 示例: "0 2 * * *" = 每天凌晨 2 点
-    schedule: "0 2 * * *"
-    # WebDAV 远程存储配置
-    webdav_url: ${WEBDAV_URL}         # WebDAV 服务器地址
-    webdav_username: ${WEBDAV_USER}   # WebDAV 用户名
-    webdav_password: ${WEBDAV_PASS}   # WebDAV 密码
-    # 本地备份配置
-    backup_path: ./backups            # 本地备份存储路径
-    retention_days: 7                 # 保留最近 7 天的备份
-    retention_count: 5                # 或保留最近 5 个备份
-    # 备份内容
-    include_memory: true              # 备份记忆数据
-    include_config: true              # 备份配置文件
-    include_logs: false               # 备份日志文件
-    compress: true                    # 是否压缩备份
-
-  # -----------------------------------------------------------------------------
-  # api-manager: API 密钥管理插件
-  # -----------------------------------------------------------------------------
-  api-manager:
-    enabled: true
-    # 加密存储配置
-    encryption_key: ${API_ENC_KEY}    # AES-256 加密密钥
-    key_storage: local                # local | vault | env
-    # 密钥轮换配置
-    rotation_enabled: true            # 启用自动轮换
-    rotation_days: 30                 # 每 30 天自动轮换
-    rotation_reminder: 7              # 提前 7 天提醒
-    # 访问控制
-    max_keys_per_user: 5              # 每个用户最多 5 个密钥
-    rate_limit_per_minute: 100        # 每分钟限流 100 次
-    # 支持的 API 提供商
-    providers:
-      - openai
-      - anthropic
-      - gemini
-      - azure
-
-  # -----------------------------------------------------------------------------
-  # daily-briefing: 每日晨报插件
-  # -----------------------------------------------------------------------------
-  daily-briefing:
-    enabled: true
-    # 晨报生成时间
-    schedule: "0 8 * * *"             # 每天早上 8 点
-    timezone: "Asia/Shanghai"         # 时区设置
-    # 内容配置
-    weather_city: "Shanghai"          # 默认城市
-    include_weather: true             # 包含天气信息
-    include_system_stats: true        # 包含系统状态
-    include_news: false               # 包含新闻摘要
-    include_tasks: true               # 包含今日任务
-    # 输出配置
-    output_format: markdown           # markdown | text
-    send_to: telegram                 # telegram | email | all
-    # 自定义问候语
-    greeting_template: "早安！今天是 {date}，{greeting}"
-
-  # -----------------------------------------------------------------------------
-  # remindme: 智能提醒插件
-  # -----------------------------------------------------------------------------
-  remindme:
-    enabled: true
-    # 存储配置
-    storage: sqlite                   # sqlite | memory
-    db_path: ./memory/reminders.db    # 提醒数据库路径
-    # 提醒限制
-    max_reminders: 100                # 最大提醒数量
-    max_recurring: 10                 # 最大循环提醒数
-    # 默认设置
-    default_snooze: 10m               # 默认贪睡时间 (10分钟)
-    default_priority: medium          # 默认优先级 (low/medium/high)
-    # 提醒方式
-    notify_before: [5m, 1m]           # 提前提醒时间
-    repeat_until_ack: false           # 是否重复直到确认
-    # 自然语言解析
-    nlp_enabled: true                 # 启用自然语言解析
-    timezone: "Asia/Shanghai"         # 时区设置
-
-# =============================================================================
-# Advanced Features (Phase 2 高级特性)
-# =============================================================================
-
-# 条件性思考模式 (auto_reasoning)
-# 根据上下文自动切换推理模式
-reasoning:
-  enabled: true                       # 启用条件思考
-  # 自动启用推理的场景
-  triggers:
-    - tool_call                      # 工具调用时
-    - complex_analysis               # 复杂分析时
-    - math_calculation               # 数学计算时
-    - code_debugging                 # 代码调试时
-  # 思考模式模型 (可选，不配置则使用主模型)
-  reasoning_model:
-    provider: openai
-    model: kimi-k2.5-reasoning        # 推理专用模型
-    max_tokens: 8000
-
-# 三层记忆架构详细配置 (provider=tiered 时生效)
-tiered_memory:
-  # 热层配置 (活跃记忆)
-  hot:
-    max_size: 10000                   # 最大记录数
-    cache_ttl: 3600                   # 缓存 TTL (秒)
-    preload_p0: true                  # 预加载 P0 记忆
-  
-  # 温层配置 (中期归档)
-  warm:
-    index_fields: ["content", "tags", "timestamp"]  # 索引字段
-    compression: false                # 是否压缩
-  
-  # 冷层配置 (长期存档)
-  cold:
-    compression: true                 # 启用压缩
-    compression_level: 6              # 压缩级别 (1-9)
-    archive_format: "parquet"         # 存档格式
+  timeout_seconds: 30

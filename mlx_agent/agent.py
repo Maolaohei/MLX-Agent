@@ -582,6 +582,11 @@ class MLXAgent:
         # 构建系统提示
         base_prompt = "你是 MLX-Agent，一个强大的 AI 助手。请保持对话连贯性，参考之前的对话历史。"
         
+        # 添加插件技能说明到系统提示
+        plugin_capabilities = self._get_plugin_capabilities_text()
+        if plugin_capabilities:
+            base_prompt += f"\n\n【你的技能】\n{plugin_capabilities}"
+        
         if self.identity:
             system_prompt = self.identity.inject_to_prompt(base_prompt)
         else:
@@ -986,3 +991,51 @@ class MLXAgent:
             'sessions': self.chat_manager.get_stats() if self.chat_manager else None
         }
         return stats
+    
+    def _get_plugin_capabilities_text(self) -> str:
+        """获取插件能力描述文本，用于注入系统提示
+        
+        Returns:
+            插件技能描述文本
+        """
+        if not self.plugin_manager:
+            return ""
+        
+        capabilities = []
+        
+        # 获取所有插件的工具
+        plugin_tools = self.plugin_manager.get_all_tools()
+        if not plugin_tools:
+            return ""
+        
+        # 按插件分组
+        plugin_caps = {}
+        for tool in plugin_tools:
+            func = tool.get('function', {})
+            name = func.get('name', '')
+            desc = func.get('description', '')
+            
+            # 根据工具名判断所属插件
+            if name.startswith('backup_'):
+                plugin_caps.setdefault('backup', []).append((name, desc))
+            elif name.startswith('api_key_'):
+                plugin_caps.setdefault('api_manager', []).append((name, desc))
+            elif name.startswith('briefing_'):
+                plugin_caps.setdefault('briefing', []).append((name, desc))
+            elif name.startswith('reminder_'):
+                plugin_caps.setdefault('remindme', []).append((name, desc))
+        
+        # 生成描述文本
+        if 'backup' in plugin_caps:
+            capabilities.append("• 备份恢复: 可创建/恢复/管理数据备份")
+        if 'api_manager' in plugin_caps:
+            capabilities.append("• API管理: 可管理API密钥的添加/查询/轮换")
+        if 'briefing' in plugin_caps:
+            capabilities.append("• 每日晨报: 可生成每日简报，包含天气、系统状态")
+        if 'remindme' in plugin_caps:
+            capabilities.append("• 智能提醒: 可设置定时提醒，支持自然语言如'10分钟后'、'明天下午3点'")
+        
+        if capabilities:
+            return "你可以使用以下技能:\n" + "\n".join(capabilities) + "\n\n当用户需要这些功能时，主动使用对应工具，无需询问。"
+        
+        return ""
