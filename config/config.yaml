@@ -37,13 +37,13 @@ platforms:
   discord:
     enabled: false
 
-# LLM 配置
+# LLM 配置 (本地 kimi-k2.5)
 llm:
   primary:
     provider: "openai"
     api_key: "${OPENAI_API_KEY}"
     api_base: "${OPENAI_API_BASE}"
-    model: "gpt-4o-mini"
+    model: "kimi-k2.5"
     temperature: 0.7
     max_tokens: 4000
   
@@ -51,7 +51,7 @@ llm:
     provider: "openai"
     api_key: "${OPENAI_API_KEY}"
     api_base: "${OPENAI_API_BASE}"
-    model: "gpt-3.5-turbo"
+    model: "kimi-k2.5"
     temperature: 0.7
     max_tokens: 4000
   
