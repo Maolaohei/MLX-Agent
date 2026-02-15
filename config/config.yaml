@@ -140,3 +140,133 @@ health_check:
 # Shutdown configuration
 shutdown:
   timeout_seconds: 30  # 优雅关闭超时
+
+# =============================================================================
+# Plugin System Configuration (Phase 2 新特性)
+# 插件系统配置 - 支持热插拔功能扩展
+# =============================================================================
+plugins:
+  # -----------------------------------------------------------------------------
+  # backup-restore: 自动备份与恢复插件
+  # -----------------------------------------------------------------------------
+  backup-restore:
+    enabled: true                     # 是否启用此插件
+    # 备份调度配置 (cron 表达式)
+    # 格式: 分 时 日 月 周
+    # 示例: "0 2 * * *" = 每天凌晨 2 点
+    schedule: "0 2 * * *"
+    # WebDAV 远程存储配置
+    webdav_url: ${WEBDAV_URL}         # WebDAV 服务器地址
+    webdav_username: ${WEBDAV_USER}   # WebDAV 用户名
+    webdav_password: ${WEBDAV_PASS}   # WebDAV 密码
+    # 本地备份配置
+    backup_path: ./backups            # 本地备份存储路径
+    retention_days: 7                 # 保留最近 7 天的备份
+    retention_count: 5                # 或保留最近 5 个备份
+    # 备份内容
+    include_memory: true              # 备份记忆数据
+    include_config: true              # 备份配置文件
+    include_logs: false               # 备份日志文件
+    compress: true                    # 是否压缩备份
+
+  # -----------------------------------------------------------------------------
+  # api-manager: API 密钥管理插件
+  # -----------------------------------------------------------------------------
+  api-manager:
+    enabled: true
+    # 加密存储配置
+    encryption_key: ${API_ENC_KEY}    # AES-256 加密密钥
+    key_storage: local                # local | vault | env
+    # 密钥轮换配置
+    rotation_enabled: true            # 启用自动轮换
+    rotation_days: 30                 # 每 30 天自动轮换
+    rotation_reminder: 7              # 提前 7 天提醒
+    # 访问控制
+    max_keys_per_user: 5              # 每个用户最多 5 个密钥
+    rate_limit_per_minute: 100        # 每分钟限流 100 次
+    # 支持的 API 提供商
+    providers:
+      - openai
+      - anthropic
+      - gemini
+      - azure
+
+  # -----------------------------------------------------------------------------
+  # daily-briefing: 每日晨报插件
+  # -----------------------------------------------------------------------------
+  daily-briefing:
+    enabled: true
+    # 晨报生成时间
+    schedule: "0 8 * * *"             # 每天早上 8 点
+    timezone: "Asia/Shanghai"         # 时区设置
+    # 内容配置
+    weather_city: "Shanghai"          # 默认城市
+    include_weather: true             # 包含天气信息
+    include_system_stats: true        # 包含系统状态
+    include_news: false               # 包含新闻摘要
+    include_tasks: true               # 包含今日任务
+    # 输出配置
+    output_format: markdown           # markdown | text
+    send_to: telegram                 # telegram | email | all
+    # 自定义问候语
+    greeting_template: "早安！今天是 {date}，{greeting}"
+
+  # -----------------------------------------------------------------------------
+  # remindme: 智能提醒插件
+  # -----------------------------------------------------------------------------
+  remindme:
+    enabled: true
+    # 存储配置
+    storage: sqlite                   # sqlite | memory
+    db_path: ./memory/reminders.db    # 提醒数据库路径
+    # 提醒限制
+    max_reminders: 100                # 最大提醒数量
+    max_recurring: 10                 # 最大循环提醒数
+    # 默认设置
+    default_snooze: 10m               # 默认贪睡时间 (10分钟)
+    default_priority: medium          # 默认优先级 (low/medium/high)
+    # 提醒方式
+    notify_before: [5m, 1m]           # 提前提醒时间
+    repeat_until_ack: false           # 是否重复直到确认
+    # 自然语言解析
+    nlp_enabled: true                 # 启用自然语言解析
+    timezone: "Asia/Shanghai"         # 时区设置
+
+# =============================================================================
+# Advanced Features (Phase 2 高级特性)
+# =============================================================================
+
+# 条件性思考模式 (auto_reasoning)
+# 根据上下文自动切换推理模式
+reasoning:
+  enabled: true                       # 启用条件思考
+  # 自动启用推理的场景
+  triggers:
+    - tool_call                      # 工具调用时
+    - complex_analysis               # 复杂分析时
+    - math_calculation               # 数学计算时
+    - code_debugging                 # 代码调试时
+  # 思考模式模型 (可选，不配置则使用主模型)
+  reasoning_model:
+    provider: openai
+    model: kimi-k2.5-reasoning        # 推理专用模型
+    max_tokens: 8000
+
+# 三层记忆架构详细配置 (provider=tiered 时生效)
+tiered_memory:
+  # 热层配置 (活跃记忆)
+  hot:
+    max_size: 10000                   # 最大记录数
+    cache_ttl: 3600                   # 缓存 TTL (秒)
+    preload_p0: true                  # 预加载 P0 记忆
+  
+  # 温层配置 (中期归档)
+  warm:
+    index_fields: ["content", "tags", "timestamp"]  # 索引字段
+    compression: false                # 是否压缩
+  
+  # 冷层配置 (长期存档)
+  cold:
+    compression: true                 # 启用压缩
+    compression_level: 6              # 压缩级别 (1-9)
+    archive_format: "parquet"         # 存档格式
