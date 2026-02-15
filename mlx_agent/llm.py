@@ -1,37 +1,43 @@
 """
-LLM 客户端 - 支持多模型、故障转移和工具调用
+LLM 客户端 - 支持多模型、故障转移、工具调用和流式输出
 
-调用 OpenAI-compatible API，支持主备模型切换
+调用 OpenAI-compatible API，支持主备模型切换和 SSE 流式
 """
 
 import asyncio
 import json
-from typing import List, Dict, Optional, Any, Union
+from typing import List, Dict, Optional, Any, Union, AsyncGenerator
 import httpx
 from loguru import logger
 
 
 class LLMClient:
-    """LLM 客户端 - 支持主备模型"""
+    """LLM 客户端 - 支持主备模型和流式输出"""
     
     def __init__(
         self,
         primary_config: Dict,
         fallback_config: Optional[Dict] = None,
-        failover_enabled: bool = True
+        failover_enabled: bool = True,
+        max_retries: int = 3,
+        retry_delay: float = 1.0
     ):
         """
         Args:
             primary_config: 主模型配置
             fallback_config: 备用模型配置
             failover_enabled: 是否启用故障转移
+            max_retries: 最大重试次数
+            retry_delay: 重试延迟（秒）
         """
         self.primary_config = primary_config
         self.fallback_config = fallback_config
         self.failover_enabled = failover_enabled and fallback_config is not None
+        self.max_retries = max_retries
+        self.retry_delay = retry_delay
         
         self.current_config = primary_config
-        self.client = httpx.AsyncClient(timeout=60.0)
+        self.client = httpx.AsyncClient(timeout=120.0)
         
         logger.info(f"LLMClient initialized")
         logger.info(f"  Primary: {primary_config.get('model', 'unknown')}")
@@ -68,34 +74,100 @@ class LLMClient:
         else:
             config = self.current_config
         
-        # 尝试主模型
-        try:
-            response = await self._call_api(
-                config, messages, temperature, max_tokens, tools, tool_choice, reasoning
-            )
-            self.current_config = config  # 成功后更新当前配置
-            return response
-        except Exception as e:
-            logger.warning(f"Primary model failed: {e}")
+        # 指数退避重试
+        for attempt in range(self.max_retries):
+            try:
+                response = await self._call_api(
+                    config, messages, temperature, max_tokens, tools, tool_choice, reasoning
+                )
+                self.current_config = config  # 成功后更新当前配置
+                return response
+            except Exception as e:
+                logger.warning(f"Attempt {attempt + 1}/{self.max_retries} failed: {e}")
+                
+                # 如果是最后一次尝试，尝试故障转移
+                if attempt == self.max_retries - 1:
+                    if self.failover_enabled and config == self.primary_config:
+                        logger.info(f"Switching to fallback model: {self.fallback_config['model']}")
+                        try:
+                            response = await self._call_api(
+                                self.fallback_config, messages, temperature, max_tokens, 
+                                tools, tool_choice, reasoning
+                            )
+                            self.current_config = self.fallback_config
+                            logger.info("Fallback model succeeded")
+                            return response
+                        except Exception as e2:
+                            logger.error(f"Fallback model also failed: {e2}")
+                            raise Exception(f"所有模型均不可用。主: {e}, 备: {e2}")
+                    else:
+                        raise e
+                
+                # 等待后重试
+                await asyncio.sleep(self.retry_delay * (2 ** attempt))
+    
+    async def chat_stream(
+        self,
+        messages: List[Dict[str, Any]],
+        temperature: float = 0.7,
+        max_tokens: int = 4000,
+        tools: Optional[List[Dict]] = None,
+        tool_choice: Optional[Union[str, Dict]] = None,
+        reasoning: bool = False,
+        force_model: Optional[str] = None
+    ) -> AsyncGenerator[Dict[str, Any], None]:
+        """流式调用聊天接口
+        
+        Args:
+            messages: 消息列表
+            temperature: 温度
+            max_tokens: 最大 token 数
+            tools: 工具定义列表
+            tool_choice: 工具选择策略
+            reasoning: 是否启用思考模式
+            force_model: 强制使用指定模型
             
-            # 如果主模型失败且启用了故障转移
-            if self.failover_enabled and config == self.primary_config:
-                logger.info(f"Switching to fallback model: {self.fallback_config['model']}")
-                try:
-                    # 注意：备用模型可能不支持 tools，如果不支持需要降级处理
-                    # 这里假设备用模型也支持 tools，或者是 Kimi 2.5 (部分支持)
-                    # 如果备用模型不支持 tools，调用者应该处理异常或不传 tools
-                    response = await self._call_api(
-                        self.fallback_config, messages, temperature, max_tokens, tools, tool_choice, reasoning
-                    )
-                    self.current_config = self.fallback_config
-                    logger.info("Fallback model succeeded")
-                    return response
-                except Exception as e2:
-                    logger.error(f"Fallback model also failed: {e2}")
-                    raise Exception(f"所有模型均不可用。主: {e}, 备: {e2}")
-            else:
-                raise e
+        Yields:
+            流式响应片段，格式:
+            - {"type": "content", "content": "文本片段"}
+            - {"type": "reasoning", "content": "思考过程"}
+            - {"type": "tool_call", "tool_call": {...}}
+            - {"type": "done", "finish_reason": "..."}
+            - {"type": "error", "error": "..."}
+        """
+        config = self.fallback_config if force_model == "fallback" and self.fallback_config else self.current_config
+        
+        # 指数退避重试
+        for attempt in range(self.max_retries):
+            try:
+                async for chunk in self._call_api_stream(
+                    config, messages, temperature, max_tokens, tools, tool_choice, reasoning
+                ):
+                    yield chunk
+                return
+            except Exception as e:
+                logger.warning(f"Stream attempt {attempt + 1}/{self.max_retries} failed: {e}")
+                
+                if attempt == self.max_retries - 1:
+                    if self.failover_enabled and config == self.primary_config:
+                        logger.info(f"Stream switching to fallback: {self.fallback_config['model']}")
+                        try:
+                            async for chunk in self._call_api_stream(
+                                self.fallback_config, messages, temperature, max_tokens,
+                                tools, tool_choice, reasoning
+                            ):
+                                yield chunk
+                            self.current_config = self.fallback_config
+                            return
+                        except Exception as e2:
+                            logger.error(f"Fallback stream also failed: {e2}")
+                            yield {"type": "error", "error": f"所有模型流式调用均失败"}
+                            return
+                    else:
+                        yield {"type": "error", "error": str(e)}
+                        return
+                
+                await asyncio.sleep(self.retry_delay * (2 ** attempt))
     
     async def _call_api(
         self,
@@ -107,7 +179,7 @@ class LLMClient:
         tool_choice: Optional[Union[str, Dict]] = None,
         reasoning: bool = False
     ) -> Dict[str, Any]:
-        """调用 API"""
+        """调用 API (非流式)"""
         api_base = config['api_base'].rstrip('/')
         url = f"{api_base}/chat/completions"
         
@@ -116,7 +188,6 @@ class LLMClient:
             "Content-Type": "application/json"
         }
         
-        # 如果有 auth_token，添加到 headers
         if config.get('auth_token'):
             headers['x-api-key'] = config['auth_token']
         
@@ -124,7 +195,8 @@ class LLMClient:
             "model": config['model'],
             "messages": messages,
             "temperature": temperature,
-            "max_tokens": max_tokens
+            "max_tokens": max_tokens,
+            "stream": False
         }
         
         if tools:
@@ -132,7 +204,6 @@ class LLMClient:
             if tool_choice:
                 data["tool_choice"] = tool_choice
         
-        # Kimi k2.5 思考模式
         if reasoning:
             data["reasoning"] = True
             logger.debug(f"[LLM] Reasoning mode enabled")
@@ -141,13 +212,16 @@ class LLMClient:
         if tools:
             logger.debug(f"[LLM] Tools count: {len(tools)}")
         
-        response = await self.client.post(url, headers=headers, json=data)
-        response.raise_for_status()
+        try:
+            response = await self.client.post(url, headers=headers, json=data)
+            response.raise_for_status()
+        except httpx.HTTPStatusError as e:
+            logger.error(f"HTTP error: {e.response.status_code} - {e.response.text[:200]}")
+            raise
         
         result = response.json()
         message = result["choices"][0]["message"]
         
-        # 记录响应
         content = message.get("content")
         tool_calls = message.get("tool_calls")
         
@@ -157,6 +231,130 @@ class LLMClient:
             logger.debug(f"[LLM] Tool calls: {len(tool_calls)}")
             
         return message
+    
+    async def _call_api_stream(
+        self,
+        config: Dict,
+        messages: List[Dict],
+        temperature: float,
+        max_tokens: int,
+        tools: Optional[List[Dict]] = None,
+        tool_choice: Optional[Union[str, Dict]] = None,
+        reasoning: bool = False
+    ) -> AsyncGenerator[Dict[str, Any], None]:
+        """调用流式 API (SSE)"""
+        api_base = config['api_base'].rstrip('/')
+        url = f"{api_base}/chat/completions"
+        
+        headers = {
+            "Authorization": f"Bearer {config['api_key']}",
+            "Content-Type": "application/json",
+            "Accept": "text/event-stream"
+        }
+        
+        if config.get('auth_token'):
+            headers['x-api-key'] = config['auth_token']
+        
+        data = {
+            "model": config['model'],
+            "messages": messages,
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+            "stream": True
+        }
+        
+        if tools:
+            data["tools"] = tools
+            if tool_choice:
+                data["tool_choice"] = tool_choice
+        
+        if reasoning:
+            data["reasoning"] = True
+        
+        logger.debug(f"[LLM Stream] Calling {config['model']}")
+        
+        accumulated_content = ""
+        accumulated_reasoning = ""
+        tool_calls_buffer = {}
+        
+        try:
+            async with self.client.stream("POST", url, headers=headers, json=data, timeout=120.0) as response:
+                response.raise_for_status()
+                
+                async for line in response.aiter_lines():
+                    if not line.strip():
+                        continue
+                    
+                    # SSE 格式: data: {...}
+                    if line.startswith("data: "):
+                        json_str = line[6:]
+                        
+                        # 流结束标记
+                        if json_str == "[DONE]":
+                            yield {"type": "done", "finish_reason": "stop"}
+                            break
+                        
+                        try:
+                            chunk = json.loads(json_str)
+                            delta = chunk.get("choices", [{}])[0].get("delta", {})
+                            finish_reason = chunk.get("choices", [{}])[0].get("finish_reason")
+                            
+                            # 内容片段
+                            content = delta.get("content")
+                            if content:
+                                accumulated_content += content
+                                yield {"type": "content", "content": content}
+                            
+                            # 思考过程 (Kimi k2.5 支持)
+                            reasoning_content = delta.get("reasoning_content")
+                            if reasoning_content:
+                                accumulated_reasoning += reasoning_content
+                                yield {"type": "reasoning", "content": reasoning_content}
+                            
+                            # 工具调用
+                            tool_calls = delta.get("tool_calls")
+                            if tool_calls:
+                                for tc in tool_calls:
+                                    index = tc.get("index", 0)
+                                    if index not in tool_calls_buffer:
+                                        tool_calls_buffer[index] = {
+                                            "id": tc.get("id", ""),
+                                            "type": "function",
+                                            "function": {"name": "", "arguments": ""}
+                                        }
+                                    
+                                    # 累积工具调用信息
+                                    if tc.get("id"):
+                                        tool_calls_buffer[index]["id"] = tc["id"]
+                                    if tc.get("function", {}).get("name"):
+                                        tool_calls_buffer[index]["function"]["name"] = tc["function"]["name"]
+                                    if tc.get("function", {}).get("arguments"):
+                                        tool_calls_buffer[index]["function"]["arguments"] += tc["function"]["arguments"]
+                            
+                            # 检查是否完成
+                            if finish_reason:
+                                # 如果有累积的工具调用，发送完整工具调用
+                                if tool_calls_buffer:
+                                    for tc in tool_calls_buffer.values():
+                                        yield {"type": "tool_call", "tool_call": tc}
+                                
+                                yield {"type": "done", "finish_reason": finish_reason}
+                                break
+                                
+                        except json.JSONDecodeError:
+                            logger.debug(f"[LLM Stream] JSON decode error: {json_str[:100]}")
+                            continue
+                        except Exception as e:
+                            logger.error(f"[LLM Stream] Error processing chunk: {e}")
+                            continue
+                            
+        except httpx.HTTPStatusError as e:
+            error_text = await e.response.aread()
+            logger.error(f"[LLM Stream] HTTP error: {e.response.status_code} - {error_text[:200]}")
+            yield {"type": "error", "error": f"HTTP {e.response.status_code}"}
+        except Exception as e:
+            logger.error(f"[LLM Stream] Error: {e}")
+            yield {"type": "error", "error": str(e)}
     
     async def simple_chat(self, user_message: str, system_prompt: Optional[str] = None) -> str:
         """简单对话 (仅返回文本)"""
@@ -173,6 +371,32 @@ class LLMClient:
         except Exception as e:
             logger.error(f"Simple chat failed: {e}")
             return f"抱歉，遇到错误: {e}"
+    
+    async def simple_chat_stream(
+        self, 
+        user_message: str, 
+        system_prompt: Optional[str] = None
+    ) -> AsyncGenerator[str, None]:
+        """简单流式对话 (仅返回文本内容)"""
+        messages = []
+        
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
+        
+        messages.append({"role": "user", "content": user_message})
+        
+        try:
+            async for chunk in self.chat_stream(messages):
+                if chunk["type"] == "content":
+                    yield chunk["content"]
+                elif chunk["type"] == "done":
+                    break
+                elif chunk["type"] == "error":
+                    yield f"\n[错误: {chunk.get('error', 'unknown')}]"
+                    break
+        except Exception as e:
+            logger.error(f"Simple chat stream failed: {e}")
+            yield f"抱歉，遇到错误: {e}"
     
     def get_current_model(self) -> str:
         """获取当前使用的模型"""

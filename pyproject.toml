@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "mlx-agent"
-version = "0.1.0"
+version = "0.3.0"
 description = "高性能、轻量级、多平台 AI Agent 系统"
 readme = "README.md"
 license = {file = "LICENSE"}
@@ -46,8 +46,9 @@ dependencies = [
     "redis>=5.0.0",
     "asyncpg>=0.29.0",
     
-    # 记忆系统 - index1 (BM25 + 向量混合搜索)
-    "index1>=0.1.0",
+    # 记忆系统 - ChromaDB (向量搜索)
+    "chromadb>=0.4.0",
+    "sentence-transformers>=2.2.0",
     
     # Token 压缩
     "tiktoken>=0.5.0",

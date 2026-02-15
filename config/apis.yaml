@@ -1,0 +1,30 @@
+# API 密钥管理中心
+# 此文件包含所有外部服务的 API 密钥
+# 安全提示：此文件不应提交到 Git！
+
+# 搜索类 API
+brave:
+  key: ""  # Brave Search API Key
+  enabled: false
+
+tavily:
+  key: "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"  # Tavily API Key
+  enabled: true
+
+# 浏览器自动化
+browser_cash:
+  key: "laz4zxgqknaka4o5bgg6yucrajm4jtqrt8gkcufwil9frcxuri6xphgreotzj3ao"
+  enabled: true
+
+# 图像识别
+saucenao:
+  key: "9905f80a9bea37c2b79b65da4969528b769f9adb"
+  enabled: true
+
+# 动漫数据库
+anilist:
+  # AniList 使用 OAuth，此处配置可选
+  enabled: true
+
+# 其他 API
+# 可按需添加更多...

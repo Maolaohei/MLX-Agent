@@ -177,6 +177,11 @@ class APIManager:
         self.apis.clear()
         self._load_config()
     
+    async def close(self):
+        """关闭 API 管理器"""
+        self._initialized = False
+        logger.info("API Manager closed")
+    
     def require(self, name: str) -> str:
         """
         要求必须使用某个 API，如果不可用则抛出异常

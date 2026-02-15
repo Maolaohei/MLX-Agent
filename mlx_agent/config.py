@@ -1,5 +1,5 @@
 """
-Configuration management
+Configuration management - v0.3.0
 
 Type-safe configuration using Pydantic
 """
@@ -12,15 +12,32 @@ from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings
 
 
+class MemoryArchiveConfig(BaseModel):
+    """自动归档配置"""
+    enabled: bool = True
+    interval_hours: int = 24
+    p1_max_age_days: int = 7
+    p2_max_age_days: int = 1
+
+
 class MemoryConfig(BaseModel):
-    """Memory system configuration (index1-based)"""
+    """Memory system configuration (ChromaDB-based)"""
     path: str = "./memory"
-    index_path: str = "./memory/.index"
-    embedding_model: str = "bge-m3"  # Default embedding model via Ollama
+    index_path: str = "./memory/.index"  # 向后兼容
+    
+    # ChromaDB 配置
+    embedding_provider: str = "local"  # local, openai, ollama
+    embedding_model: str = "BAAI/bge-m3"
+    chroma_path: str = "./memory/chroma"
     ollama_url: str = "http://localhost:11434"
+    openai_api_key: Optional[str] = None
+    
+    # 自动归档
+    auto_archive: MemoryArchiveConfig = MemoryArchiveConfig()
+    
+    # 向后兼容
     force_reindex: bool = False
     index_on_startup: bool = True
-    # Note: P0/P1/P2 levels are supported via directory structure
 
 
 class PlatformConfig(BaseModel):
@@ -74,7 +91,7 @@ class LLMModelConfig(BaseModel):
 class FailoverConfig(BaseModel):
     """Failover configuration"""
     enabled: bool = True
-    max_retries: int = 2
+    max_retries: int = 3
     timeout: int = 30
 
 
@@ -127,12 +144,24 @@ class PerformanceConfig(BaseModel):
     connection_pool_size: int = 100
 
 
+class HealthCheckConfig(BaseModel):
+    """Health check server configuration"""
+    enabled: bool = True
+    host: str = "0.0.0.0"
+    port: int = 8080
+
+
+class ShutdownConfig(BaseModel):
+    """Graceful shutdown configuration"""
+    timeout_seconds: int = 30
+
+
 class Config(BaseSettings):
     """MLX-Agent main configuration"""
     
     # Basic info
     name: str = "MLX-Agent"
-    version: str = "0.1.0"
+    version: str = "0.3.0"
     debug: bool = False
     
     # Sub-configs
@@ -140,6 +169,8 @@ class Config(BaseSettings):
     platforms: PlatformsConfig = PlatformsConfig()
     llm: LLMConfig = LLMConfig()
     performance: PerformanceConfig = PerformanceConfig()
+    health_check: HealthCheckConfig = HealthCheckConfig()
+    shutdown: ShutdownConfig = ShutdownConfig()
     
     @classmethod
     def load(cls, config_path: Optional[str] = None) -> "Config":
@@ -164,11 +195,17 @@ class Config(BaseSettings):
                     break
         
         if config_path and Path(config_path).exists():
-            with open(config_path, "r", encoding="utf-8") as f:
-                data = yaml.safe_load(f)
-            return cls(**data)
+            try:
+                with open(config_path, "r", encoding="utf-8") as f:
+                    data = yaml.safe_load(f)
+                return cls(**data)
+            except Exception as e:
+                logger.error(f"Failed to load config from {config_path}: {e}")
+                logger.info("Using default configuration")
+                return cls()
         
         # Use default config
+        logger.info("No config file found, using default configuration")
         return cls()
     
     def save(self, config_path: str = "config/config.yaml"):

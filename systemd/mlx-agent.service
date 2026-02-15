@@ -1,0 +1,44 @@
+[Unit]
+Description=MLX-Agent AI Assistant
+Documentation=https://github.com/Maolaohei/MLX-Agent
+After=network.target
+Wants=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/root/.openclaw/workspace/MLX-Agent
+Environment="PATH=/root/.openclaw/workspace/MLX-Agent/.venv/bin:/usr/bin:/bin"
+Environment="PYTHONUNBUFFERED=1"
+Environment="PYTHONDONTWRITEBYTECODE=1"
+
+# 使用 .venv 中的 Python
+ExecStart=/root/.openclaw/workspace/MLX-Agent/.venv/bin/python -m mlx_agent start
+
+# 优雅关闭
+ExecStop=/bin/kill -TERM $MAINPID
+TimeoutStopSec=60
+KillSignal=SIGTERM
+KillMode=mixed
+
+# 重启策略
+Restart=always
+RestartSec=10
+StartLimitInterval=60
+StartLimitBurst=3
+
+# 资源限制
+LimitNOFILE=65536
+LimitNPROC=4096
+
+# 安全设置
+NoNewPrivileges=false
+ProtectSystem=no
+ProtectHome=no
+
+# 日志
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=mlx-agent
+
+[Install]
+WantedBy=multi-user.target
