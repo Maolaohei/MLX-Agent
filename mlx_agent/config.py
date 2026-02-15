@@ -84,6 +84,9 @@ class LLMModelConfig(BaseModel):
         if self.api_key and self.api_key.startswith('${') and self.api_key.endswith('}'):
             env_var = self.api_key[2:-1]
             self.api_key = os.environ.get(env_var)
+        if self.api_base and self.api_base.startswith('${') and self.api_base.endswith('}'):
+            env_var = self.api_base[2:-1]
+            self.api_base = os.environ.get(env_var)
         if self.auth_token and self.auth_token.startswith('${') and self.auth_token.endswith('}'):
             env_var = self.auth_token[2:-1]
             self.auth_token = os.environ.get(env_var)
@@ -120,6 +123,9 @@ class LLMConfig(BaseModel):
         if self.api_key and self.api_key.startswith('${') and self.api_key.endswith('}'):
             env_var = self.api_key[2:-1]
             self.api_key = os.environ.get(env_var)
+        if self.api_base and self.api_base.startswith('${') and self.api_base.endswith('}'):
+            env_var = self.api_base[2:-1]
+            self.api_base = os.environ.get(env_var)
         if self.auth_token and self.auth_token.startswith('${') and self.auth_token.endswith('}'):
             env_var = self.auth_token[2:-1]
             self.auth_token = os.environ.get(env_var)
