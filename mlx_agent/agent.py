@@ -29,6 +29,7 @@ from .chat import ChatSessionManager, ChatResponse
 from .llm import LLMClient
 from .api_manager import APIManager, get_api_manager
 from .health import HealthCheckServer
+from .plugins import PluginManager, create_plugin_manager, initialize_plugins
 
 
 class MLXAgent:
@@ -98,6 +99,9 @@ class MLXAgent:
         # LLM 客户端
         self.llm: Optional[LLMClient] = None
         
+        # 插件系统
+        self.plugin_manager: Optional[PluginManager] = None
+        
         # 设置信号处理
         self._setup_signal_handlers()
         
@@ -150,13 +154,16 @@ class MLXAgent:
             # 7. 初始化技能系统
             await self._init_skills()
             
-            # 8. 初始化任务系统
+            # 8. 初始化插件系统
+            await self._init_plugins()
+            
+            # 9. 初始化任务系统
             await self._init_task_system()
             
-            # 9. 初始化平台适配器
+            # 10. 初始化平台适配器
             await self._init_platforms()
             
-            # 10. 启动健康检查服务器
+            # 11. 启动健康检查服务器
             await self._init_health_server()
             
             elapsed = time.time() - start_time
@@ -225,21 +232,28 @@ class MLXAgent:
                 self._safe_stop("skills", self._close_skills())
             ))
         
-        # 5. 关闭 LLM 客户端
+        # 5. 关闭插件系统
+        if self.plugin_manager:
+            logger.info("Closing plugins...")
+            shutdown_tasks.append(asyncio.create_task(
+                self._safe_stop("plugins", self._close_plugins())
+            ))
+        
+        # 6. 关闭 LLM 客户端
         if self.llm:
             logger.info("Closing LLM client...")
             shutdown_tasks.append(asyncio.create_task(
                 self._safe_stop("llm", self.llm.close())
             ))
         
-        # 6. 关闭记忆系统
+        # 7. 关闭记忆系统
         if self.memory:
             logger.info("Closing memory system...")
             shutdown_tasks.append(asyncio.create_task(
                 self._safe_stop("memory", self.memory.close())
             ))
         
-        # 7. 关闭 API 管理器
+        # 8. 关闭 API 管理器
         if self.api_manager:
             logger.info("Closing API manager...")
             shutdown_tasks.append(asyncio.create_task(
@@ -403,6 +417,33 @@ class MLXAgent:
                 except Exception as e:
                     logger.warning(f"Error unloading plugin {name}: {e}")
     
+    async def _init_plugins(self):
+        """初始化插件系统"""
+        # 从配置获取插件配置
+        plugin_configs = self.config.plugins.model_dump() if self.config.plugins else {}
+        
+        # 创建插件管理器
+        self.plugin_manager = create_plugin_manager(
+            plugin_configs=plugin_configs,
+            auto_discover=False
+        )
+        
+        # 初始化所有插件
+        results = await initialize_plugins(self.plugin_manager, plugin_configs)
+        
+        logger.info(
+            f"Plugin system initialized: {results['success']}/{results['total']} plugins loaded"
+        )
+        if results['failed'] > 0:
+            for name, error in results['errors'].items():
+                logger.warning(f"Plugin '{name}' failed to initialize: {error}")
+    
+    async def _close_plugins(self):
+        """关闭插件系统"""
+        if self.plugin_manager:
+            await self.plugin_manager.shutdown_all()
+            logger.info("Plugins shutdown")
+    
     async def _init_task_system(self):
         """初始化任务系统"""
         self.task_queue = TaskQueue(maxsize=1000)
@@ -467,12 +508,14 @@ class MLXAgent:
         if text_lower in ['/status', 'status', '状态']:
             stats = await self.get_stats()
             queue_stats = self.task_queue.get_stats() if self.task_queue else {}
+            plugin_count = stats['plugins']['loaded'] if 'plugins' in stats else 0
             return (
                 f"📊 状态\n"
                 f"• Agent: {'运行中' if stats['running'] else '已停止'}\n"
                 f"• 任务队列: {queue_stats.get('pending', 0)} 等待 / "
                 f"{queue_stats.get('running', 0)} 执行中\n"
-                f"• Tools: {stats['skills']['native']} 原生工具"
+                f"• Tools: {stats['skills']['native']} 原生工具\n"
+                f"• Plugins: {plugin_count} 个插件"
             )
         
         # 任务列表命令
@@ -562,13 +605,28 @@ class MLXAgent:
         
         messages.append({"role": "user", "content": text})
         
-        # 获取可用工具
+        # 获取可用工具 (技能系统 + 插件系统)
         tools = None
+        all_tools = []
+        
+        # 从技能系统获取工具
         if self.skill_manager:
             try:
-                tools = self.skill_manager.get_all_tools_schema()
+                skill_tools = self.skill_manager.get_all_tools_schema()
+                all_tools.extend(skill_tools)
             except Exception as e:
-                logger.error(f"Failed to get tools: {e}")
+                logger.error(f"Failed to get skill tools: {e}")
+        
+        # 从插件系统获取工具
+        if self.plugin_manager:
+            try:
+                plugin_tools = self.plugin_manager.get_all_tools()
+                all_tools.extend(plugin_tools)
+            except Exception as e:
+                logger.error(f"Failed to get plugin tools: {e}")
+        
+        if all_tools:
+            tools = all_tools
         
         if task:
             task.set_progress("🧠 调用 AI 生成回复...", 0.6)
@@ -624,12 +682,35 @@ class MLXAgent:
                             import json
                             arguments = json.loads(arguments)
                         
-                        result = await self.tool_executor.execute(
-                            function_name,
-                            arguments,
-                            context or {}
-                        )
-                        tool_output = result.get("output") if result.get("success") else f"Error: {result.get('error')}"
+                        # 首先尝试技能系统的工具
+                        result = None
+                        if self.tool_executor:
+                            try:
+                                result = await self.tool_executor.execute(
+                                    function_name,
+                                    arguments,
+                                    context or {}
+                                )
+                            except Exception:
+                                result = None
+                        
+                        # 如果技能系统没有该工具，尝试插件系统
+                        if result is None and self.plugin_manager:
+                            result = await self.plugin_manager.handle_tool(
+                                function_name,
+                                arguments
+                            )
+                            # 统一输出格式
+                            if isinstance(result, dict):
+                                if result.get("success"):
+                                    result = {"success": True, "output": result.get("message") or result.get("data") or str(result)}
+                                else:
+                                    result = {"success": False, "error": result.get("error", "Unknown error")}
+                        
+                        if result is None:
+                            tool_output = f"Error: Tool '{function_name}' not found"
+                        else:
+                            tool_output = result.get("output") if result.get("success") else f"Error: {result.get('error')}"
                     except Exception as e:
                         tool_output = f"Execution failed: {str(e)}"
                     
@@ -894,6 +975,10 @@ class MLXAgent:
             'identity': self.identity.get_identity_summary() if self.identity else None,
             'skills': {
                 'native': len(self.skill_manager.plugins) if self.skill_manager else 0
+            },
+            'plugins': {
+                'loaded': len(self.plugin_manager.list_plugins()) if self.plugin_manager else 0,
+                'names': self.plugin_manager.list_plugins() if self.plugin_manager else []
             },
             'memory': self.memory.get_stats() if self.memory else None,
             'tasks': self.task_queue.get_stats() if self.task_queue else None,

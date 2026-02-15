@@ -169,6 +169,72 @@ class ShutdownConfig(BaseModel):
     timeout_seconds: int = 30
 
 
+# ============ Plugin Configurations ============
+
+class BackupWebDAVConfig(BaseModel):
+    """Backup WebDAV configuration"""
+    enabled: bool = False
+    url: str = ""
+    username: str = ""
+    password: str = ""
+    path: str = "/mlx-agent/backups"
+
+
+class BackupAutoConfig(BaseModel):
+    """Backup auto backup configuration"""
+    enabled: bool = True
+    time: str = "02:00"
+    keep_count: int = 7
+
+
+class BackupConfig(BaseModel):
+    """Backup plugin configuration"""
+    enabled: bool = True
+    backup_dir: str = "./backups"
+    auto_backup: BackupAutoConfig = BackupAutoConfig()
+    webdav: BackupWebDAVConfig = BackupWebDAVConfig()
+    sources: List[str] = ["./memory", "./config", "./skills"]
+
+
+class APIManagerConfig(BaseModel):
+    """API Manager plugin configuration"""
+    enabled: bool = True
+    storage_dir: str = "./data/api_keys"
+    master_password: Optional[str] = None
+    auto_rotation: bool = True
+    rotation_check_hours: int = 24
+
+
+class BriefingConfig(BaseModel):
+    """Briefing plugin configuration"""
+    enabled: bool = True
+    data_dir: str = "./data/briefing"
+    auto_enabled: bool = True
+    default_time: str = "08:00"
+    default_location: str = ""
+    weather_provider: str = "openmeteo"
+    weather_api_key: Optional[str] = None
+
+
+class RemindmeConfig(BaseModel):
+    """Remindme plugin configuration"""
+    enabled: bool = True
+    data_dir: str = "./data/reminders"
+    timezone: str = "Asia/Shanghai"
+
+
+class PluginsConfig(BaseModel):
+    """All plugins configuration"""
+    backup: BackupConfig = BackupConfig()
+    api_manager: APIManagerConfig = APIManagerConfig()
+    briefing: BriefingConfig = BriefingConfig()
+    remindme: RemindmeConfig = RemindmeConfig()
+    
+    # 允许动态插件配置
+    class Config:
+        extra = "allow"
+
+
 class Config(BaseSettings):
     """MLX-Agent main configuration"""
 
@@ -185,6 +251,7 @@ class Config(BaseSettings):
     security: SecurityConfig = SecurityConfig()
     health_check: HealthCheckConfig = HealthCheckConfig()
     shutdown: ShutdownConfig = ShutdownConfig()
+    plugins: PluginsConfig = PluginsConfig()
     
     @classmethod
     def load(cls, config_path: Optional[str] = None) -> "Config":
@@ -454,6 +521,42 @@ class ConfigValidator:
         return fixed
     
     @staticmethod
+    def validate_plugins_config(config: dict) -> tuple[bool, List[str]]:
+        """验证插件配置
+        
+        Args:
+            config: 插件配置字典
+            
+        Returns:
+            (是否有效, 错误信息列表)
+        """
+        errors = []
+        
+        if not isinstance(config, dict):
+            errors.append("Plugins config must be a dictionary")
+            return False, errors
+        
+        # 验证已知插件配置
+        known_plugins = ["backup", "api_manager", "briefing", "remindme"]
+        
+        for plugin_name in config.keys():
+            if plugin_name not in known_plugins:
+                # 未知插件，只是警告
+                pass
+            
+            plugin_config = config.get(plugin_name, {})
+            if not isinstance(plugin_config, dict):
+                errors.append(f"Plugin '{plugin_name}' config must be a dictionary")
+                continue
+            
+            # 验证 enabled 字段
+            enabled = plugin_config.get("enabled")
+            if enabled is not None and not isinstance(enabled, bool):
+                errors.append(f"Plugin '{plugin_name}' enabled must be a boolean")
+        
+        return len(errors) == 0, errors
+    
+    @staticmethod
     def validate_full_config(config: dict) -> Dict[str, Any]:
         """验证完整配置
         
@@ -480,6 +583,7 @@ class ConfigValidator:
             "memory": ConfigValidator.validate_memory_config,
             "llm": ConfigValidator.validate_llm_config,
             "security": ConfigValidator.validate_security_config,
+            "plugins": ConfigValidator.validate_plugins_config,
         }
         
         for section_name, validator_func in sections.items():
