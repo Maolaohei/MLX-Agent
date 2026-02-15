@@ -404,6 +404,233 @@ class ChromaMemoryBackend(MemoryBackend):
             
         except Exception as e:
             logger.error(f"Failed to archive memory: {e}")
+
+    # ===== Memory Enhancer 功能 =====
+    
+    async def auto_archive(self) -> Dict[str, int]:
+        """手动触发自动归档
+        
+        Returns:
+            归档统计信息
+        """
+        if not self._initialized:
+            return {"archived": 0, "deleted": 0, "error": "not_initialized"}
+        
+        result = {"archived": 0, "deleted": 0}
+        
+        for level, max_days in [(MemoryLevel.P1, self.p1_max_age_days), (MemoryLevel.P2, self.p2_max_age_days)]:
+            memories = await self.get_by_level(level)
+            
+            for mem in memories:
+                try:
+                    created_at = datetime.fromisoformat(mem['metadata'].get('created_at', datetime.now().isoformat()))
+                    age_days = (datetime.now() - created_at).days
+                    
+                    if age_days > max_days:
+                        if level == MemoryLevel.P1:
+                            await self._archive_memory(mem)
+                            result["archived"] += 1
+                        else:
+                            await self.delete(mem['id'])
+                            result["deleted"] += 1
+                except Exception as e:
+                    logger.debug(f"Archive processing error: {e}")
+        
+        logger.info(f"Manual archive complete: {result['archived']} archived, {result['deleted']} deleted")
+        return result
+    
+    async def detect_duplicates(self, threshold: float = 0.9) -> List[str]:
+        """检测重复记忆
+        
+        Args:
+            threshold: 相似度阈值，超过此值认为是重复
+            
+        Returns:
+            重复的记忆 ID 列表（保留第一个，其余为重复）
+        """
+        if not self._initialized or not self._collection:
+            return []
+        
+        try:
+            loop = asyncio.get_event_loop()
+            
+            # 获取所有记忆
+            all_memories = await loop.run_in_executor(
+                None,
+                lambda: self._collection.get(include=["documents", "embeddings"])
+            )
+            
+            if not all_memories['ids']:
+                return []
+            
+            duplicates = []
+            seen = set()
+            
+            for i, mem_id in enumerate(all_memories['ids']):
+                if mem_id in seen:
+                    continue
+                
+                # 获取当前记忆的嵌入
+                if not all_memories['embeddings'] or not all_memories['embeddings'][i]:
+                    continue
+                
+                embedding_i = all_memories['embeddings'][i]
+                
+                # 与其他记忆比较
+                for j, other_id in enumerate(all_memories['ids']):
+                    if i >= j or other_id in seen:
+                        continue
+                    
+                    if not all_memories['embeddings'] or not all_memories['embeddings'][j]:
+                        continue
+                    
+                    embedding_j = all_memories['embeddings'][j]
+                    
+                    # 计算余弦相似度
+                    similarity = self._cosine_similarity(embedding_i, embedding_j)
+                    
+                    if similarity >= threshold:
+                        duplicates.append(other_id)
+                        seen.add(other_id)
+                
+                seen.add(mem_id)
+            
+            logger.info(f"Detected {len(duplicates)} duplicate memories")
+            return duplicates
+            
+        except Exception as e:
+            logger.error(f"Duplicate detection failed: {e}")
+            return []
+    
+    def _cosine_similarity(self, a, b) -> float:
+        """计算余弦相似度"""
+        import numpy as np
+        a = np.array(a)
+        b = np.array(b)
+        norm_a = np.linalg.norm(a)
+        norm_b = np.linalg.norm(b)
+        if norm_a == 0 or norm_b == 0:
+            return 0.0
+        return float(np.dot(a, b) / (norm_a * norm_b))
+    
+    async def merge_duplicates(self, keep: str = "newest") -> Dict[str, int]:
+        """合并重复记忆
+        
+        Args:
+            keep: 保留策略，"newest" 或 "oldest"
+            
+        Returns:
+            合并统计
+        """
+        duplicates = await self.detect_duplicates(threshold=0.9)
+        
+        if not duplicates:
+            return {"merged": 0, "deleted": 0}
+        
+        deleted_count = 0
+        for dup_id in duplicates:
+            if await self.delete(dup_id):
+                deleted_count += 1
+        
+        logger.info(f"Merged duplicates: kept {keep}, deleted {deleted_count}")
+        return {"merged": len(duplicates), "deleted": deleted_count}
+    
+    async def upgrade_memory_level(self, memory_id: str, new_level: str) -> bool:
+        """升级记忆级别 (P2 -> P1 -> P0)
+        
+        Args:
+            memory_id: 记忆 ID
+            new_level: 新级别 (P0, P1, P2)
+            
+        Returns:
+            是否成功
+        """
+        if not self._initialized or not self._collection:
+            return False
+        
+        try:
+            # 获取当前记忆
+            loop = asyncio.get_event_loop()
+            result = await loop.run_in_executor(
+                None,
+                lambda: self._collection.get(ids=[memory_id], include=["documents", "metadatas"])
+            )
+            
+            if not result['ids']:
+                logger.warning(f"Memory not found: {memory_id}")
+                return False
+            
+            # 更新元数据
+            metadata = result['metadatas'][0] if result['metadatas'] else {}
+            metadata['level'] = new_level
+            metadata['upgraded_at'] = datetime.now().isoformat()
+            
+            # 更新
+            await loop.run_in_executor(
+                None,
+                lambda: self._collection.update(
+                    ids=[memory_id],
+                    metadatas=[metadata]
+                )
+            )
+            
+            logger.info(f"Upgraded memory {memory_id[:20]}... to {new_level}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Failed to upgrade memory: {e}")
+            return False
+    
+    async def get_memory_stats(self) -> Dict[str, Any]:
+        """获取详细记忆统计
+        
+        Returns:
+            包含总数、各级别数量、重复率等统计信息
+        """
+        if not self._initialized or not self._collection:
+            return {"status": "not_initialized"}
+        
+        try:
+            loop = asyncio.get_event_loop()
+            total = await loop.run_in_executor(None, self._collection.count)
+            
+            # 按级别统计
+            level_stats = {}
+            for level in MemoryLevel:
+                try:
+                    results = await loop.run_in_executor(
+                        None,
+                        lambda: self._collection.get(where={"level": level.value})
+                    )
+                    level_stats[level.value] = len(results['ids']) if results['ids'] else 0
+                except:
+                    level_stats[level.value] = 0
+            
+            # 计算重复率
+            duplicates = await self.detect_duplicates(threshold=0.9)
+            duplicate_rate = len(duplicates) / total if total > 0 else 0
+            
+            # 归档文件统计
+            archive_count = 0
+            if self.archive_path.exists():
+                for archive_file in self.archive_path.glob("*.jsonl"):
+                    with open(archive_file, 'r', encoding='utf-8') as f:
+                        archive_count += sum(1 for _ in f)
+            
+            return {
+                "status": "initialized",
+                "backend": "chroma",
+                "total_memories": total,
+                "by_level": level_stats,
+                "duplicate_count": len(duplicates),
+                "duplicate_rate": round(duplicate_rate, 4),
+                "archived_count": archive_count,
+                "embedding_provider": self.embedding_provider,
+                "embedding_model": self.embedding_model
+            }
+            
+        except Exception as e:
+            return {"status": "error", "error": str(e)}
     
     async def get_stats(self) -> Dict[str, Any]:
         """获取统计信息"""

@@ -5,11 +5,12 @@ Type-safe configuration using Pydantic
 """
 
 from pathlib import Path
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Union
 
 import yaml
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, validator, ValidationError
 from pydantic_settings import BaseSettings
+from loguru import logger
 
 
 class MemoryArchiveConfig(BaseModel):
@@ -226,3 +227,276 @@ class Config(BaseSettings):
         Path(config_path).parent.mkdir(parents=True, exist_ok=True)
         with open(config_path, "w", encoding="utf-8") as f:
             yaml.dump(self.model_dump(), f, allow_unicode=True, sort_keys=False)
+
+
+class ConfigValidator:
+    """配置验证器 - 验证和修复配置问题"""
+    
+    @staticmethod
+    def validate_memory_config(config: dict) -> tuple[bool, List[str]]:
+        """验证记忆配置
+        
+        Args:
+            config: 记忆配置字典
+            
+        Returns:
+            (是否有效, 错误信息列表)
+        """
+        errors = []
+        
+        if not isinstance(config, dict):
+            errors.append("Memory config must be a dictionary")
+            return False, errors
+        
+        # 验证嵌入提供商
+        provider = config.get("embedding_provider", "local")
+        valid_providers = ["local", "openai", "ollama"]
+        if provider not in valid_providers:
+            errors.append(f"Invalid embedding_provider: {provider}. Must be one of {valid_providers}")
+        
+        # 验证路径
+        path = config.get("path", "./memory")
+        if not path or not isinstance(path, str):
+            errors.append("Memory path must be a non-empty string")
+        
+        # 验证归档配置
+        auto_archive = config.get("auto_archive", {})
+        if isinstance(auto_archive, dict):
+            p1_days = auto_archive.get("p1_max_age_days", 7)
+            p2_days = auto_archive.get("p2_max_age_days", 1)
+            
+            if not isinstance(p1_days, int) or p1_days < 1:
+                errors.append("p1_max_age_days must be a positive integer")
+            if not isinstance(p2_days, int) or p2_days < 1:
+                errors.append("p2_max_age_days must be a positive integer")
+            if p1_days <= p2_days:
+                errors.append("p1_max_age_days should be greater than p2_max_age_days")
+        
+        return len(errors) == 0, errors
+    
+    @staticmethod
+    def validate_llm_config(config: dict) -> tuple[bool, List[str]]:
+        """验证 LLM 配置
+        
+        Args:
+            config: LLM 配置字典
+            
+        Returns:
+            (是否有效, 错误信息列表)
+        """
+        errors = []
+        
+        if not isinstance(config, dict):
+            errors.append("LLM config must be a dictionary")
+            return False, errors
+        
+        # 检查主模型配置
+        primary = config.get("primary")
+        if primary and isinstance(primary, dict):
+            # 验证必需字段
+            if not primary.get("api_key") and not config.get("api_key"):
+                errors.append("API key is required for LLM (either in primary or root)")
+            
+            # 验证温度
+            temp = primary.get("temperature")
+            if temp is not None:
+                if not isinstance(temp, (int, float)) or temp < 0 or temp > 2:
+                    errors.append(f"temperature must be between 0 and 2, got {temp}")
+            
+            # 验证 max_tokens
+            max_tokens = primary.get("max_tokens")
+            if max_tokens is not None:
+                if not isinstance(max_tokens, int) or max_tokens < 1:
+                    errors.append(f"max_tokens must be a positive integer, got {max_tokens}")
+        
+        # 验证故障转移配置
+        failover = config.get("failover", {})
+        if isinstance(failover, dict):
+            max_retries = failover.get("max_retries", 3)
+            if not isinstance(max_retries, int) or max_retries < 0 or max_retries > 10:
+                errors.append(f"max_retries must be between 0 and 10, got {max_retries}")
+            
+            timeout = failover.get("timeout", 30)
+            if not isinstance(timeout, int) or timeout < 1:
+                errors.append(f"timeout must be a positive integer, got {timeout}")
+        
+        return len(errors) == 0, errors
+    
+    @staticmethod
+    def validate_security_config(config: dict) -> tuple[bool, List[str]]:
+        """验证安全配置
+        
+        Args:
+            config: 安全配置字典
+            
+        Returns:
+            (是否有效, 错误信息列表)
+        """
+        errors = []
+        
+        if not isinstance(config, dict):
+            errors.append("Security config must be a dictionary")
+            return False, errors
+        
+        # 验证绑定地址
+        bind = config.get("default_bind", "127.0.0.1")
+        if bind == "0.0.0.0":
+            errors.append("Warning: binding to 0.0.0.0 may expose the service to external networks")
+        
+        # 验证路径列表
+        forbidden_paths = config.get("forbidden_paths", [])
+        if not isinstance(forbidden_paths, list):
+            errors.append("forbidden_paths must be a list")
+        
+        allowed_paths = config.get("allowed_paths", [])
+        if not isinstance(allowed_paths, list):
+            errors.append("allowed_paths must be a list")
+        
+        return len(errors) == 0, errors
+    
+    @staticmethod
+    def auto_fix(config: dict) -> dict:
+        """自动修复常见问题
+        
+        Args:
+            config: 原始配置字典
+            
+        Returns:
+            修复后的配置字典
+        """
+        if not isinstance(config, dict):
+            logger.warning("Config is not a dictionary, returning empty dict")
+            return {}
+        
+        fixed = config.copy()
+        fixes_applied = []
+        
+        # 修复记忆配置
+        if "memory" in fixed and isinstance(fixed["memory"], dict):
+            memory = fixed["memory"]
+            
+            # 确保 auto_archive 是字典
+            if "auto_archive" in memory and not isinstance(memory["auto_archive"], dict):
+                memory["auto_archive"] = {"enabled": bool(memory["auto_archive"])}
+                fixes_applied.append("Converted auto_archive to dictionary format")
+            
+            # 修复负数的 max_age_days
+            auto_archive = memory.get("auto_archive", {})
+            if isinstance(auto_archive, dict):
+                for key in ["p1_max_age_days", "p2_max_age_days"]:
+                    value = auto_archive.get(key, 7 if "p1" in key else 1)
+                    if not isinstance(value, int) or value < 1:
+                        auto_archive[key] = 7 if "p1" in key else 1
+                        fixes_applied.append(f"Fixed invalid {key}: {value} -> {auto_archive[key]}")
+                
+                # 确保 p1 > p2
+                p1 = auto_archive.get("p1_max_age_days", 7)
+                p2 = auto_archive.get("p2_max_age_days", 1)
+                if p1 <= p2:
+                    auto_archive["p1_max_age_days"] = max(p1, p2 + 1)
+                    fixes_applied.append(f"Fixed p1_max_age_days to be greater than p2_max_age_days")
+        
+        # 修复 LLM 配置
+        if "llm" in fixed and isinstance(fixed["llm"], dict):
+            llm = fixed["llm"]
+            
+            # 修复温度
+            for key in ["temperature"]:
+                value = llm.get(key)
+                if value is not None:
+                    try:
+                        temp = float(value)
+                        if temp < 0 or temp > 2:
+                            llm[key] = max(0, min(2, temp))
+                            fixes_applied.append(f"Clamped {key} to valid range: {llm[key]}")
+                    except (ValueError, TypeError):
+                        llm[key] = 0.7
+                        fixes_applied.append(f"Fixed invalid {key}, set to default 0.7")
+            
+            # 修复 max_tokens
+            max_tokens = llm.get("max_tokens")
+            if max_tokens is not None:
+                try:
+                    tokens = int(max_tokens)
+                    if tokens < 1:
+                        llm["max_tokens"] = 2000
+                        fixes_applied.append(f"Fixed invalid max_tokens, set to default 2000")
+                except (ValueError, TypeError):
+                    llm["max_tokens"] = 2000
+                    fixes_applied.append(f"Fixed invalid max_tokens, set to default 2000")
+            
+            # 确保 failover 是字典
+            if "failover" in llm and not isinstance(llm["failover"], dict):
+                llm["failover"] = {"enabled": bool(llm["failover"])}
+                fixes_applied.append("Converted failover to dictionary format")
+        
+        # 修复性能配置
+        if "performance" in fixed and isinstance(fixed["performance"], dict):
+            perf = fixed["performance"]
+            
+            # 修复 max_workers
+            max_workers = perf.get("max_workers")
+            if max_workers is not None:
+                try:
+                    workers = int(max_workers)
+                    if workers < 1 or workers > 100:
+                        perf["max_workers"] = max(1, min(100, workers))
+                        fixes_applied.append(f"Clamped max_workers to valid range: {perf['max_workers']}")
+                except (ValueError, TypeError):
+                    perf["max_workers"] = 10
+                    fixes_applied.append("Fixed invalid max_workers, set to default 10")
+        
+        if fixes_applied:
+            logger.info(f"Config auto-fix applied {len(fixes_applied)} fixes:")
+            for fix in fixes_applied:
+                logger.info(f"  - {fix}")
+        
+        return fixed
+    
+    @staticmethod
+    def validate_full_config(config: dict) -> Dict[str, Any]:
+        """验证完整配置
+        
+        Args:
+            config: 完整配置字典
+            
+        Returns:
+            验证结果字典
+        """
+        results = {
+            "valid": True,
+            "sections": {},
+            "warnings": [],
+            "errors": []
+        }
+        
+        if not isinstance(config, dict):
+            results["valid"] = False
+            results["errors"].append("Config must be a dictionary")
+            return results
+        
+        # 验证各个部分
+        sections = {
+            "memory": ConfigValidator.validate_memory_config,
+            "llm": ConfigValidator.validate_llm_config,
+            "security": ConfigValidator.validate_security_config,
+        }
+        
+        for section_name, validator_func in sections.items():
+            section_config = config.get(section_name, {})
+            is_valid, errors = validator_func(section_config)
+            results["sections"][section_name] = {
+                "valid": is_valid,
+                "errors": errors
+            }
+            if not is_valid:
+                results["valid"] = False
+                results["errors"].extend([f"[{section_name}] {e}" for e in errors])
+        
+        # 检查未知部分
+        known_sections = set(sections.keys()) | {"name", "version", "debug", "platforms", "performance", "health_check", "shutdown"}
+        unknown = set(config.keys()) - known_sections
+        if unknown:
+            results["warnings"].append(f"Unknown config sections: {unknown}")
+        
+        return results

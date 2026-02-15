@@ -415,3 +415,219 @@ class FileTool(BaseTool):
                 "absolute_path": normalized
             }
         )
+
+    # ===== 大文件分片操作 =====
+    
+    async def upload_large(
+        self,
+        source: str,
+        destination: str,
+        chunk_size: int = 10 * 1024 * 1024,  # 10MB
+        progress_callback: Optional[callable] = None
+    ) -> ToolResult:
+        """大文件分片上传
+        
+        Args:
+            source: 源文件路径
+            destination: 目标路径
+            chunk_size: 分片大小（默认10MB）
+            progress_callback: 进度回调函数 (bytes_uploaded, total_bytes, percentage)
+        
+        Returns:
+            ToolResult 包含上传结果
+        """
+        from typing import Callable
+        
+        # 验证路径
+        valid, error = self._validate_path(destination)
+        if not valid:
+            return ToolResult(success=False, output=None, error=error)
+        
+        src_normalized = self._normalize_path(source)
+        dst_normalized = self._normalize_path(destination)
+        
+        # 检查源文件
+        if not os.path.isfile(src_normalized):
+            return ToolResult(success=False, output=None, error=f"Source file not found: {source}")
+        
+        try:
+            total_size = os.path.getsize(src_normalized)
+            bytes_uploaded = 0
+            chunk_index = 0
+            
+            # 确保目标目录存在
+            dst_dir = os.path.dirname(dst_normalized)
+            if dst_dir:
+                os.makedirs(dst_dir, exist_ok=True)
+            
+            # 检查是否有临时文件（断点续传）
+            temp_path = f"{dst_normalized}.part"
+            resume_position = 0
+            
+            if os.path.exists(temp_path):
+                resume_position = os.path.getsize(temp_path)
+                bytes_uploaded = resume_position
+                logger.info(f"Resuming upload from byte {resume_position}")
+            
+            # 分片读取和写入
+            async with aiofiles.open(src_normalized, 'rb') as src_f:
+                # 跳过已上传部分
+                if resume_position > 0:
+                    await src_f.seek(resume_position)
+                
+                async with aiofiles.open(temp_path, 'ab' if resume_position > 0 else 'wb') as dst_f:
+                    while True:
+                        chunk = await src_f.read(chunk_size)
+                        if not chunk:
+                            break
+                        
+                        await dst_f.write(chunk)
+                        bytes_uploaded += len(chunk)
+                        chunk_index += 1
+                        
+                        # 计算进度
+                        percentage = (bytes_uploaded / total_size) * 100 if total_size > 0 else 0
+                        
+                        # 调用进度回调
+                        if progress_callback and callable(progress_callback):
+                            try:
+                                progress_callback(bytes_uploaded, total_size, percentage)
+                            except Exception as e:
+                                logger.warning(f"Progress callback error: {e}")
+                        
+                        # 定期日志
+                        if chunk_index % 10 == 0:
+                            logger.debug(f"Upload progress: {percentage:.1f}% ({bytes_uploaded}/{total_size} bytes)")
+            
+            # 上传完成，重命名临时文件
+            os.rename(temp_path, dst_normalized)
+            
+            logger.info(f"Large file upload complete: {source} -> {destination} ({bytes_uploaded} bytes)")
+            
+            return ToolResult(
+                success=True,
+                output={
+                    "source": source,
+                    "destination": destination,
+                    "bytes_uploaded": bytes_uploaded,
+                    "total_bytes": total_size,
+                    "chunks": chunk_index,
+                    "resumed": resume_position > 0,
+                    "chunk_size": chunk_size
+                }
+            )
+            
+        except Exception as e:
+            logger.error(f"Large file upload failed: {e}")
+            return ToolResult(success=False, output=None, error=f"Upload failed: {str(e)}")
+    
+    async def download_large(
+        self,
+        url: str,
+        destination: str,
+        chunk_size: int = 10 * 1024 * 1024,
+        progress_callback: Optional[callable] = None
+    ) -> ToolResult:
+        """大文件分片下载
+        
+        Args:
+            url: 下载 URL
+            destination: 保存路径
+            chunk_size: 分片大小（默认10MB）
+            progress_callback: 进度回调函数 (bytes_downloaded, total_bytes, percentage)
+        
+        Returns:
+            ToolResult 包含下载结果
+        """
+        import httpx
+        
+        # 验证路径
+        valid, error = self._validate_path(destination)
+        if not valid:
+            return ToolResult(success=False, output=None, error=error)
+        
+        dst_normalized = self._normalize_path(destination)
+        
+        try:
+            async with httpx.AsyncClient(timeout=300.0, follow_redirects=True) as client:
+                # 发送 HEAD 请求获取文件大小
+                head_response = await client.head(url)
+                total_size = int(head_response.headers.get('content-length', 0))
+                
+                # 检查是否支持断点续传
+                accept_ranges = head_response.headers.get('accept-ranges', '')
+                supports_resume = 'bytes' in accept_ranges.lower()
+                
+                # 检查是否有临时文件
+                temp_path = f"{dst_normalized}.part"
+                resume_position = 0
+                
+                if os.path.exists(temp_path) and supports_resume:
+                    resume_position = os.path.getsize(temp_path)
+                    logger.info(f"Resuming download from byte {resume_position}")
+                
+                # 构建请求头
+                headers = {}
+                if resume_position > 0 and supports_resume:
+                    headers['Range'] = f'bytes={resume_position}-'
+                
+                # 开始下载
+                async with client.stream('GET', url, headers=headers, timeout=300.0) as response:
+                    response.raise_for_status()
+                    
+                    # 获取实际总大小（考虑断点续传）
+                    if total_size == 0:
+                        total_size = int(response.headers.get('content-length', 0))
+                    
+                    bytes_downloaded = resume_position
+                    chunk_index = 0
+                    
+                    # 确保目录存在
+                    dst_dir = os.path.dirname(dst_normalized)
+                    if dst_dir:
+                        os.makedirs(dst_dir, exist_ok=True)
+                    
+                    # 写入文件
+                    async with aiofiles.open(temp_path, 'ab' if resume_position > 0 else 'wb') as f:
+                        async for chunk in response.aiter_bytes(chunk_size=chunk_size):
+                            if chunk:
+                                await f.write(chunk)
+                                bytes_downloaded += len(chunk)
+                                chunk_index += 1
+                                
+                                # 计算进度
+                                actual_total = total_size if total_size > 0 else bytes_downloaded
+                                percentage = (bytes_downloaded / actual_total) * 100 if actual_total > 0 else 0
+                                
+                                # 调用进度回调
+                                if progress_callback and callable(progress_callback):
+                                    try:
+                                        progress_callback(bytes_downloaded, actual_total, percentage)
+                                    except Exception as e:
+                                        logger.warning(f"Progress callback error: {e}")
+                                
+                                # 定期日志
+                                if chunk_index % 10 == 0:
+                                    logger.debug(f"Download progress: {percentage:.1f}% ({bytes_downloaded}/{actual_total} bytes)")
+                    
+                    # 下载完成，重命名
+                    os.rename(temp_path, dst_normalized)
+                    
+                    logger.info(f"Large file download complete: {url} -> {destination} ({bytes_downloaded} bytes)")
+                    
+                    return ToolResult(
+                        success=True,
+                        output={
+                            "url": url,
+                            "destination": destination,
+                            "bytes_downloaded": bytes_downloaded,
+                            "total_bytes": total_size,
+                            "chunks": chunk_index,
+                            "resumed": resume_position > 0,
+                            "chunk_size": chunk_size
+                        }
+                    )
+                    
+        except Exception as e:
+            logger.error(f"Large file download failed: {e}")
+            return ToolResult(success=False, output=None, error=f"Download failed: {str(e)}")

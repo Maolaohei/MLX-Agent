@@ -598,6 +598,209 @@ class SQLiteMemoryBackend(MemoryBackend):
             
         except Exception as e:
             logger.error(f"Failed to archive memory: {e}")
+
+    # ===== Memory Enhancer 功能 =====
+    
+    async def auto_archive(self) -> Dict[str, int]:
+        """手动触发自动归档
+        
+        Returns:
+            归档统计信息
+        """
+        if not self._initialized:
+            return {"archived": 0, "deleted": 0, "error": "not_initialized"}
+        
+        result = {"archived": 0, "deleted": 0}
+        
+        for level, max_days in [(MemoryLevel.P1, self.p1_max_age_days), (MemoryLevel.P2, self.p2_max_age_days)]:
+            memories = await self.get_by_level(level)
+            
+            for mem in memories:
+                try:
+                    created_at = datetime.fromisoformat(mem.get('created_at', datetime.now().isoformat()))
+                    age_days = (datetime.now() - created_at).days
+                    
+                    if age_days > max_days:
+                        if level == MemoryLevel.P1:
+                            await self._archive_memory(mem)
+                            result["archived"] += 1
+                        else:
+                            await self.delete(mem['id'])
+                            result["deleted"] += 1
+                except Exception as e:
+                    logger.debug(f"Archive processing error: {e}")
+        
+        logger.info(f"Manual archive complete: {result['archived']} archived, {result['deleted']} deleted")
+        return result
+    
+    async def detect_duplicates(self, threshold: float = 0.9) -> List[str]:
+        """检测重复记忆
+        
+        Args:
+            threshold: 相似度阈值，超过此值认为是重复
+            
+        Returns:
+            重复的记忆 ID 列表（保留第一个，其余为重复）
+        """
+        if not self._initialized or not self._db:
+            return []
+        
+        try:
+            cursor = self._db.cursor()
+            cursor.execute("SELECT id, content, embedding FROM memories WHERE embedding IS NOT NULL")
+            rows = cursor.fetchall()
+            
+            if not rows:
+                return []
+            
+            duplicates = []
+            seen = set()
+            
+            for i, row_i in enumerate(rows):
+                mem_id_i = row_i['id']
+                if mem_id_i in seen:
+                    continue
+                
+                if row_i['embedding'] is None:
+                    continue
+                
+                embedding_i = np.frombuffer(row_i['embedding'], dtype=np.float32)
+                
+                for j, row_j in enumerate(rows):
+                    if i >= j:
+                        continue
+                    
+                    mem_id_j = row_j['id']
+                    if mem_id_j in seen or row_j['embedding'] is None:
+                        continue
+                    
+                    embedding_j = np.frombuffer(row_j['embedding'], dtype=np.float32)
+                    similarity = self._cosine_similarity(embedding_i, embedding_j)
+                    
+                    if similarity >= threshold:
+                        duplicates.append(mem_id_j)
+                        seen.add(mem_id_j)
+                
+                seen.add(mem_id_i)
+            
+            logger.info(f"Detected {len(duplicates)} duplicate memories")
+            return duplicates
+            
+        except Exception as e:
+            logger.error(f"Duplicate detection failed: {e}")
+            return []
+    
+    async def merge_duplicates(self, keep: str = "newest") -> Dict[str, int]:
+        """合并重复记忆
+        
+        Args:
+            keep: 保留策略，"newest" 或 "oldest"
+            
+        Returns:
+            合并统计
+        """
+        duplicates = await self.detect_duplicates(threshold=0.9)
+        
+        if not duplicates:
+            return {"merged": 0, "deleted": 0}
+        
+        deleted_count = 0
+        for dup_id in duplicates:
+            if await self.delete(dup_id):
+                deleted_count += 1
+        
+        logger.info(f"Merged duplicates: kept {keep}, deleted {deleted_count}")
+        return {"merged": len(duplicates), "deleted": deleted_count}
+    
+    async def upgrade_memory_level(self, memory_id: str, new_level: str) -> bool:
+        """升级记忆级别 (P2 -> P1 -> P0)
+        
+        Args:
+            memory_id: 记忆 ID
+            new_level: 新级别 (P0, P1, P2)
+            
+        Returns:
+            是否成功
+        """
+        if not self._initialized or not self._db:
+            return False
+        
+        try:
+            cursor = self._db.cursor()
+            
+            # 检查记忆是否存在
+            cursor.execute("SELECT id FROM memories WHERE id = ?", (memory_id,))
+            if not cursor.fetchone():
+                logger.warning(f"Memory not found: {memory_id}")
+                return False
+            
+            # 更新级别
+            cursor.execute(
+                "UPDATE memories SET level = ? WHERE id = ?",
+                (new_level, memory_id)
+            )
+            self._db.commit()
+            
+            logger.info(f"Upgraded memory {memory_id[:20]}... to {new_level}")
+            return cursor.rowcount > 0
+            
+        except Exception as e:
+            logger.error(f"Failed to upgrade memory: {e}")
+            return False
+    
+    async def get_memory_stats(self) -> Dict[str, Any]:
+        """获取详细记忆统计
+        
+        Returns:
+            包含总数、各级别数量、重复率等统计信息
+        """
+        if not self._initialized or not self._db:
+            return {"status": "not_initialized"}
+        
+        try:
+            cursor = self._db.cursor()
+            
+            # 总记忆数
+            cursor.execute("SELECT COUNT(*) as total FROM memories")
+            total = cursor.fetchone()['total']
+            
+            # 按级别统计
+            level_stats = {}
+            for level in MemoryLevel:
+                cursor.execute("SELECT COUNT(*) as count FROM memories WHERE level = ?", (level.value,))
+                level_stats[level.value] = cursor.fetchone()['count']
+            
+            # 计算重复率
+            duplicates = await self.detect_duplicates(threshold=0.9)
+            duplicate_rate = len(duplicates) / total if total > 0 else 0
+            
+            # 嵌入缓存统计
+            cursor.execute("SELECT COUNT(*) as count FROM embedding_cache")
+            cache_count = cursor.fetchone()['count']
+            
+            # 归档文件统计
+            archive_count = 0
+            if self.archive_path.exists():
+                for archive_file in self.archive_path.glob("*.jsonl"):
+                    with open(archive_file, 'r', encoding='utf-8') as f:
+                        archive_count += sum(1 for _ in f)
+            
+            return {
+                "status": "initialized",
+                "backend": "sqlite",
+                "total_memories": total,
+                "by_level": level_stats,
+                "duplicate_count": len(duplicates),
+                "duplicate_rate": round(duplicate_rate, 4),
+                "archived_count": archive_count,
+                "embedding_provider": self.embedding_provider,
+                "embedding_model": self.embedding_model,
+                "fts_enabled": self._fts_enabled,
+                "embedding_cache_size": cache_count
+            }
+            
+        except Exception as e:
+            return {"status": "error", "error": str(e)}
     
     async def get_stats(self) -> Dict[str, Any]:
         """获取统计信息"""
