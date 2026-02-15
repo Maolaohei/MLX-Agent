@@ -30,55 +30,77 @@ dependencies = [
     "uvloop>=0.21.0; sys_platform != 'win32'",
     "aiohttp>=3.9.0",
     "aiofiles>=23.2.0",
-    
+
     # 性能优化
     "orjson>=3.9.0",
-    
+
     # 配置与数据
     "pydantic>=2.5.0",
     "pydantic-settings>=2.1.0",
     "pyyaml>=6.0.1",
-    
+
     # 日志
     "loguru>=0.7.0",
-    
+
     # 数据库
     "redis>=5.0.0",
     "asyncpg>=0.29.0",
-    
-    # 记忆系统 - ChromaDB (向量搜索)
-    "chromadb>=0.4.0",
-    "sentence-transformers>=2.2.0",
-    
+
     # Token 压缩
     "tiktoken>=0.5.0",
-    
+
     # 定时任务
     "apscheduler>=3.10.0",
-    
+
     # HTTP 客户端
     "httpx>=0.25.0",
-    
-    # 工具依赖
-    "duckduckgo-search>=3.9.0",  # 搜索
-    "readability-lxml>=0.8.1",   # 网页解析
-    "aiofiles>=23.2.0",          # 异步文件操作
+
+    # 基础工具依赖（轻量级）
     "click>=8.1.0",
     "rich>=13.7.0",
     "python-dotenv>=1.0.0",
-    
+    "numpy>=1.24.0",  # SQLite 后端需要
+
     # 时间处理
     "python-dateutil>=2.8.0",
     "pytz>=2023.3",
-    
+
     # 监控
     "psutil>=5.9.0",
 ]
 
 [project.optional-dependencies]
+# 最小安装（核心功能，使用 SQLite 后端）
+minimal = [
+    # 仅核心依赖已在主依赖列表中
+]
+
+# 记忆系统 - ChromaDB 后端
+memory-chroma = [
+    "chromadb>=0.4.0",
+    "sentence-transformers>=2.2.0",
+]
+
+# 记忆系统 - 本地嵌入模型
+memory-embeddings = [
+    "sentence-transformers>=2.2.0",
+]
+
 # 本地向量搜索 (Ollama)
 local = [
     "ollama>=0.1.0",
+    "sentence-transformers>=2.2.0",
+]
+
+# 搜索工具
+search = [
+    "duckduckgo-search>=3.9.0",
+    "readability-lxml>=0.8.1",
+]
+
+# 浏览器自动化
+browser = [
+    "playwright>=1.40.0",
 ]
 
 # 开发依赖
@@ -90,6 +112,7 @@ dev = [
     "ruff>=0.1.0",
     "mypy>=1.7.0",
     "pre-commit>=3.5.0",
+    "pyinstaller>=6.0.0",
 ]
 
 # 平台适配器
@@ -101,10 +124,15 @@ openai = ["openai>=1.6.0"]
 anthropic = ["anthropic>=0.8.0"]
 
 # 完整安装
-all = [
-    "mlx-agent[telegram,discord,openai,anthropic,local]",
+full = [
+    "mlx-agent[memory-chroma,search,browser,telegram,discord,openai,anthropic,local]",
     "jinja2>=3.1.0",
     "markdown>=3.5.0",
+]
+
+# 保持向后兼容
+all = [
+    "mlx-agent[full]",
 ]
 
 [project.scripts]

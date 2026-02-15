@@ -19,7 +19,7 @@ from contextlib import asynccontextmanager
 from loguru import logger
 
 from .config import Config
-from .memory import ChromaMemorySystem
+from .memory import MemorySystem, create_memory_backend
 from .memory.consolidation import MemoryConsolidator
 from .identity import IdentityManager
 from .compression import TokenCompressor
@@ -79,7 +79,7 @@ class MLXAgent:
         self._running = False
         
         # 初始化组件（将在 start 中初始化）
-        self.memory: Optional[ChromaMemorySystem] = None
+        self.memory: Optional[Any] = None
         self.consolidator: Optional[MemoryConsolidator] = None
         self.identity: Optional[IdentityManager] = None
         self.compressor: Optional[TokenCompressor] = None
@@ -296,16 +296,26 @@ class MLXAgent:
     
     async def _init_memory(self):
         """初始化记忆系统"""
-        # 从配置获取嵌入提供商
+        # 从配置获取记忆后端提供商（默认使用 chroma 保持兼容）
+        memory_provider = getattr(self.config.memory, 'provider', 'chroma')
         embedding_provider = getattr(self.config.memory, 'embedding_provider', 'local')
-        
-        self.memory = ChromaMemorySystem(
-            path=self.config.memory.path,
-            embedding_provider=embedding_provider,
-            auto_archive=True
-        )
-        await self.memory.initialize()
-        logger.info("ChromaDB memory system initialized")
+
+        memory_config = {
+            "provider": memory_provider,
+            "chroma": {
+                "path": getattr(self.config.memory, 'chroma_path', './memory/chroma'),
+                "embedding_provider": embedding_provider,
+                "auto_archive": True
+            },
+            "sqlite": {
+                "path": getattr(self.config.memory, 'sqlite_path', './memory/memory.db'),
+                "embedding_provider": embedding_provider,
+                "auto_archive": True
+            }
+        }
+
+        self.memory = await create_memory_backend(memory_config)
+        logger.info(f"Memory system initialized (provider={memory_provider})")
     
     async def _init_consolidator(self):
         """初始化记忆整合器"""

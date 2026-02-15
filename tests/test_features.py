@@ -106,7 +106,7 @@ async def test_memory_tiers():
     print("\nTesting tiered memory (P0/P1/P2)...")
     
     try:
-        from mlx_agent.memory import Memory, ChromaMemorySystem
+        from mlx_agent.memory import Memory, MemoryLevel
         from datetime import datetime, timedelta
         
         # 测试各级别记忆

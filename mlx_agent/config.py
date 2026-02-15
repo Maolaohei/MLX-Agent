@@ -144,10 +144,22 @@ class PerformanceConfig(BaseModel):
     connection_pool_size: int = 100
 
 
+class SecurityConfig(BaseModel):
+    """Security configuration"""
+    default_bind: str = "127.0.0.1"  # 不是 0.0.0.0，更安全
+    workspace_only: bool = True  # 文件操作限制在工作区
+    forbidden_paths: List[str] = [
+        "/etc", "/root", "/proc", "/sys",
+        "~/.ssh", "~/.gnupg", "~/.aws",
+        "/var/log", "/var/mail"
+    ]
+    allowed_paths: List[str] = []  # 额外的白名单路径
+
+
 class HealthCheckConfig(BaseModel):
     """Health check server configuration"""
     enabled: bool = True
-    host: str = "0.0.0.0"
+    host: str = "127.0.0.1"  # 默认改为 127.0.0.1 更安全
     port: int = 8080
 
 
@@ -158,17 +170,18 @@ class ShutdownConfig(BaseModel):
 
 class Config(BaseSettings):
     """MLX-Agent main configuration"""
-    
+
     # Basic info
     name: str = "MLX-Agent"
     version: str = "0.3.0"
     debug: bool = False
-    
+
     # Sub-configs
     memory: MemoryConfig = MemoryConfig()
     platforms: PlatformsConfig = PlatformsConfig()
     llm: LLMConfig = LLMConfig()
     performance: PerformanceConfig = PerformanceConfig()
+    security: SecurityConfig = SecurityConfig()
     health_check: HealthCheckConfig = HealthCheckConfig()
     shutdown: ShutdownConfig = ShutdownConfig()
     

@@ -38,7 +38,7 @@ def test_imports():
         return False
     
     try:
-        from mlx_agent.memory import Memory, ChromaMemorySystem
+        from mlx_agent.memory import Memory, MemorySystem
         print("✅ Memory module OK")
     except Exception as e:
         print(f"❌ Memory module failed: {e}")
@@ -75,9 +75,9 @@ def test_config():
 def test_memory_system():
     """测试记忆系统结构"""
     print("\nTesting memory system...")
-    
+
     try:
-        from mlx_agent.memory import Memory, ChromaMemorySystem
+        from mlx_agent.memory import Memory, MemorySystem
         
         # 测试 Memory 类
         mem = Memory(content="Test content", level="P1")
