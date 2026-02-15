@@ -5,13 +5,14 @@
 - ChromaDB: 高性能向量搜索（推荐用于生产环境）
 - SQLite: 轻量级，零额外依赖（适合资源受限环境）
 - Hybrid: 混合模式（ChromaDB + SQLite），支持内存不足时自动降级
+- Tiered: 三层架构（热/温/冷），优化存储和检索效率
 
 使用方式:
     from mlx_agent.memory import create_memory_backend, MemoryEntry, MemoryLevel
     
     # 创建后端
     backend = await create_memory_backend({
-        "provider": "hybrid",  # "chroma", "sqlite", "hybrid"
+        "provider": "hybrid",  # "chroma", "sqlite", "hybrid", "tiered"
         "hybrid": {
             "chroma": {"path": "./memory/chroma"},
             "sqlite": {"path": "./memory/hybrid.db"},
@@ -31,6 +32,7 @@ from .base import MemoryBackend, MemoryEntry, MemoryLevel
 from .chroma import ChromaMemoryBackend
 from .sqlite import SQLiteMemoryBackend
 from .hybrid import HybridMemoryBackend, HybridConfig, create_hybrid_backend
+from .tiered import TieredMemoryBackend
 
 # 向后兼容：Memory 别名
 Memory = MemoryEntry
@@ -45,10 +47,11 @@ async def create_memory_backend(config: dict) -> MemoryBackend:
     
     Args:
         config: 配置字典
-            - provider: "chroma", "sqlite" 或 "hybrid" (默认: chroma)
+            - provider: "chroma", "sqlite", "hybrid" 或 "tiered" (默认: chroma)
             - chroma: ChromaDB 配置
             - sqlite: SQLite 配置
             - hybrid: Hybrid 配置 (包含 chroma 和 sqlite 子配置)
+            - tiered: 三层架构配置 (热/温/冷)
     
     Returns:
         配置好的记忆后端实例
@@ -62,11 +65,26 @@ async def create_memory_backend(config: dict) -> MemoryBackend:
         ...         "memory_threshold_mb": 500
         ...     }
         ... })
+        
+        >>> backend = await create_memory_backend({
+        ...     "provider": "tiered",
+        ...     "tiered": {
+        ...         "hot_path": "./memory/hot",
+        ...         "warm_path": "./memory/warm.db",
+        ...         "cold_path": "./memory/cold",
+        ...         "embedding_provider": "local",
+        ...         "auto_tiering": True
+        ...     }
+        ... })
     """
     provider = config.get("provider", "chroma").lower()
     
     if provider == "hybrid":
         backend = await create_hybrid_backend(config.get("hybrid"))
+    elif provider == "tiered":
+        from .tiered import TieredMemoryBackend
+        tiered_config = config.get("tiered", {})
+        backend = TieredMemoryBackend(**tiered_config)
     elif provider == "sqlite":
         sqlite_config = config.get("sqlite", {})
         backend = SQLiteMemoryBackend(**sqlite_config)
@@ -74,7 +92,7 @@ async def create_memory_backend(config: dict) -> MemoryBackend:
         chroma_config = config.get("chroma", {})
         backend = ChromaMemoryBackend(**chroma_config)
     else:
-        raise ValueError(f"Unknown memory provider: {provider}. Use 'chroma', 'sqlite', or 'hybrid'")
+        raise ValueError(f"Unknown memory provider: {provider}. Use 'chroma', 'sqlite', 'hybrid', or 'tiered'")
     
     # 自动初始化
     await backend.initialize()
@@ -92,6 +110,7 @@ __all__ = [
     "SQLiteMemoryBackend",
     "HybridMemoryBackend",
     "HybridConfig",
+    "TieredMemoryBackend",
     # 工厂函数
     "create_memory_backend",
     "create_hybrid_backend",

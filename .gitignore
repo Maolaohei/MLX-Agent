@@ -63,7 +63,7 @@ logs/
 Thumbs.db
 
 # Project specific
-memory/
+/memory/           # 仅忽略根目录的 memory 数据文件夹，保留 mlx_agent/memory/ 源码
 config/config.yaml
 config/apis.yaml  # API 密钥配置文件（包含敏感信息）
 *.db

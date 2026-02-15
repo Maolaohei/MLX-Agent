@@ -1,0 +1,142 @@
+# MLX-Agent Configuration - v0.3.0
+
+name: "MLX-Agent"
+version: "0.3.0"
+debug: true
+
+# Performance optimization
+performance:
+  use_uvloop: true
+  json_library: orjson
+  max_workers: 4
+
+# Memory system (三后端支持)
+memory:
+  # 后端选择: "chroma" | "sqlite" | "hybrid" | "tiered"
+  # - chroma: 推荐用于生产环境，需要 100MB+ 内存
+  # - sqlite: 零额外依赖，仅需 20MB 内存，适合边缘设备
+  # - hybrid: ChromaDB + SQLite 功能分工，内存不足时自动降级为纯 SQLite
+  # - tiered: 热/温/冷三层架构，优化存储和检索效率
+  provider: hybrid
+  
+  # Hybrid 配置 (provider=hybrid 时使用)
+  # 功能分工：
+  # - ChromaDB: 向量存储和语义搜索
+  # - SQLite: 关键词索引、元数据、缓存
+  # - 内存不足 (<500MB) 时自动降级为纯 SQLite 模式
+  hybrid:
+    mode: "functional"  # 功能分工模式
+    
+    # ChromaDB 配置 (向量存储)
+    chroma:
+      path: ./memory/chroma
+      embedding_provider: local
+      embedding_model: BAAI/bge-m3
+      ollama_url: http://localhost:11434
+      openai_api_key: ${OPENAI_API_KEY}
+    
+    # SQLite 配置 (关键词索引)
+    sqlite:
+      path: ./memory/hybrid.db
+      embedding_provider: local
+      embedding_model: BAAI/bge-m3
+    
+    # RRF 合并参数
+    rrf_k: 60
+    
+    # 内存监控与降级
+    memory_threshold_mb: 500  # 可用内存 < 500MB 时降级
+    memory_check_interval: 60
+    fallback_mode: auto  # auto | never | always
+  
+  # ChromaDB 配置 (provider=chroma 时使用)
+  chroma:
+    path: ./memory/chroma
+    embedding_provider: local  # local, openai, ollama
+    embedding_model: BAAI/bge-m3
+    ollama_url: http://localhost:11434
+    openai_api_key: ${OPENAI_API_KEY}
+  
+  # SQLite 配置 (provider=sqlite 时使用)
+  sqlite:
+    path: ./memory/memory.db
+    embedding_provider: local  # local, openai
+    embedding_model: BAAI/bge-m3
+    openai_api_key: ${OPENAI_API_KEY}
+    # 混合搜索权重
+    vector_weight: 0.7      # 向量搜索权重
+    keyword_weight: 0.3     # 关键词搜索权重
+  
+  # Tiered 三层架构配置 (provider=tiered 时使用)
+  # 热/温/冷三层存储，优化存储和检索效率
+  # - 热层 (Hot): ChromaDB - 活跃记忆，快速访问
+  # - 温层 (Warm): SQLite - 中期归档，关键词搜索
+  # - 冷层 (Cold): ChromaDB - 长期存档，深度检索
+  tiered:
+    hot_path: ./memory/hot          # 热层: ChromaDB (P0 + 7天内P1 + 1天内P2)
+    warm_path: ./memory/warm.db     # 温层: SQLite (7-30天P1)
+    cold_path: ./memory/cold        # 冷层: ChromaDB (30天+ P1/P2)
+    embedding_provider: local       # local, openai, ollama
+    auto_tiering: true              # 自动分层归档
+    # 分层阈值 (天)
+    hot_warm_threshold: 7           # P1: 7天后移到温层
+    warm_cold_threshold: 30         # P1: 30天后移到冷层
+    p2_archive_days: 1              # P2: 1天后归档到冷层
+  
+  # 自动归档配置 (所有后端通用)
+  auto_archive:
+    enabled: true
+    interval_hours: 24
+    p1_max_age_days: 7    # P1 记忆保留7天
+    p2_max_age_days: 1    # P2 记忆保留1天
+
+# Platform configuration
+platforms:
+  telegram:
+    enabled: true
+    bot_token: ${TELEGRAM_BOT_TOKEN}
+    admin_user_id: ${TELEGRAM_ADMIN_ID}
+    
+  qqbot:
+    enabled: false
+    
+  discord:
+    enabled: false
+
+# LLM configuration - 多模型配置
+llm:
+  # 主模型 (kimi-k2.5)
+  primary:
+    provider: openai
+    api_key: ${OPENAI_API_KEY}
+    api_base: http://127.0.0.1:8317/v1
+    auth_token: ${AUTH_TOKEN}
+    model: kimi-k2.5
+    temperature: 0.7
+    max_tokens: 4000
+  
+  # 备用模型 (gemini-3-pro-preview)
+  fallback:
+    provider: openai
+    api_key: ${OPENAI_API_KEY}
+    api_base: http://127.0.0.1:8317/v1
+    auth_token: ${AUTH_TOKEN}
+    model: gemini-3-pro-preview
+    temperature: 0.7
+    max_tokens: 4000
+  
+  # 切换设置
+  failover:
+    enabled: true
+    max_retries: 3
+    timeout: 30
+
+# Health check server configuration
+health_check:
+  enabled: true
+  host: "0.0.0.0"
+  port: 8080
+
+# Shutdown configuration
+shutdown:
+  timeout_seconds: 30  # 优雅关闭超时
