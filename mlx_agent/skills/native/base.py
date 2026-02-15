@@ -1,201 +1,158 @@
 """
-原生 Python Skill 基类 - 支持 OpenAI Function Calling
+原生技能基类
 
-所有原生 Skill 都应继承此类，并提供 JSON Schema
+纯 Python 实现，无需外部依赖
 """
 
 from abc import ABC, abstractmethod
-from typing import Any, Dict, List, Optional
 from dataclasses import dataclass, field
+from typing import Dict, Any, List, Optional
+from datetime import datetime
 
 
 @dataclass
 class SkillContext:
-    """Skill 执行上下文"""
-    agent: Any  # MLXAgent 实例
+    """技能上下文"""
     user_id: Optional[str] = None
     chat_id: Optional[str] = None
     platform: Optional[str] = None
-    memory: Optional[List[Dict]] = None
-    
-    async def search_memory(self, query: str, top_k: int = 5):
-        """搜索记忆"""
-        if self.agent and self.agent.memory:
-            return await self.agent.memory.search(query, top_k)
-        return []
-    
-    async def add_memory(self, content: str, metadata: Dict = None):
-        """添加记忆"""
-        if self.agent and self.agent.memory:
-            return await self.agent.memory.add(content, metadata)
+    message_id: Optional[str] = None
+    timestamp: datetime = field(default_factory=datetime.now)
 
 
 @dataclass
 class SkillResult:
-    """Skill 执行结果"""
+    """技能执行结果"""
     success: bool
-    output: Any = None
+    output: Any
     error: Optional[str] = None
-    metadata: Dict = field(default_factory=dict)
+    execution_time_ms: Optional[int] = None
 
 
 class NativeSkill(ABC):
-    """原生 Python Skill 基类
+    """原生技能基类
     
-    支持 OpenAI Function Calling 协议
+    所有原生 Python 技能应继承此类
     """
     
-    # Skill 元数据
-    name: str = ""
-    description: str = ""
-    version: str = "1.0.0"
-    author: str = ""
-    
-    # OpenAI Function Parameters Schema
-    # 必须在子类中定义
-    parameters: Dict[str, Any] = {
-        "type": "object",
-        "properties": {},
-        "required": []
-    }
-    
-    def __init__(self, agent=None):
-        self.agent = agent
+    def __init__(self, name: str, description: str):
+        self.name = name
+        self.description = description
+        self._initialized = False
     
     @abstractmethod
-    async def execute(self, context: SkillContext, **kwargs) -> SkillResult:
-        """执行 Skill
+    async def execute(self, action: str, params: Dict[str, Any], context: SkillContext) -> SkillResult:
+        """执行技能
         
         Args:
-            context: 执行上下文
-            **kwargs: 参数 (来自 LLM tool_calls)
+            action: 动作名称
+            params: 参数
+            context: 上下文
             
         Returns:
-            SkillResult
+            SkillResult: 执行结果
         """
         pass
     
-    def get_function_schema(self) -> Dict[str, Any]:
-        """获取 OpenAI Function Schema"""
-        return {
-            "type": "function",
-            "function": {
-                "name": self.name,
-                "description": self.description,
-                "parameters": self.parameters
-            }
-        }
-    
-    async def before_execute(self, context: SkillContext):
-        """执行前钩子"""
+    @abstractmethod
+    def get_tools(self) -> List[Dict]:
+        """获取工具定义 (OpenAI Function Calling 格式)"""
         pass
     
-    async def after_execute(self, context: SkillContext, result: SkillResult):
-        """执行后钩子"""
-        pass
+    async def initialize(self):
+        """初始化技能"""
+        self._initialized = True
+    
+    async def cleanup(self):
+        """清理资源"""
+        self._initialized = False
 
-
-# --- 默认原生 Skill ---
 
 class MemorySkill(NativeSkill):
-    """记忆管理 Skill"""
+    """记忆技能 - 直接与记忆系统交互"""
     
-    name = "memory_tool"
-    description = "管理长期记忆（添加、搜索）。当用户让你'记住'某事时使用 add，当用户问及过去的事时使用 search。"
+    def __init__(self, memory_manager=None):
+        super().__init__(
+            name="memory",
+            description="记忆管理: 存储、检索、删除记忆"
+        )
+        self.memory_manager = memory_manager
     
-    parameters = {
-        "type": "object",
-        "properties": {
-            "action": {
-                "type": "string",
-                "enum": ["add", "search"],
-                "description": "操作类型：add (添加记忆) 或 search (搜索记忆)"
-            },
-            "content": {
-                "type": "string",
-                "description": "要添加的记忆内容（仅用于 action=add）"
-            },
-            "query": {
-                "type": "string",
-                "description": "搜索关键词（仅用于 action=search）"
-            }
-        },
-        "required": ["action"]
-    }
-    
-    async def execute(self, context: SkillContext, **kwargs) -> SkillResult:
-        action = kwargs.get("action")
+    async def execute(self, action: str, params: Dict[str, Any], context: SkillContext) -> SkillResult:
+        """执行记忆操作"""
+        if not self.memory_manager:
+            return SkillResult(success=False, output=None, error="Memory manager not available")
         
-        if not context.agent or not context.agent.memory:
-            return SkillResult(success=False, error="Memory system not initialized or not available")
-            
         try:
-            if action == "add":
-                content = kwargs.get("content")
-                if not content:
-                    return SkillResult(success=False, error="Content is required for add action")
+            if action == "remember":
+                content = params.get("content")
+                level = params.get("level", "P1")
+                tags = params.get("tags", [])
                 
-                await context.agent.memory.add(content, {"source": "user_interaction"})
-                return SkillResult(success=True, output=f"已记住: {content[:50]}...")
+                # 使用记忆管理器存储
+                await self.memory_manager.add(
+                    content=content,
+                    level=level,
+                    tags=tags,
+                    user_id=context.user_id,
+                    chat_id=context.chat_id
+                )
+                return SkillResult(success=True, output={"stored": True})
             
-            elif action == "search":
-                query = kwargs.get("query")
-                if not query:
-                    return SkillResult(success=False, error="Query is required for search action")
+            elif action == "recall":
+                query = params.get("query")
+                limit = params.get("limit", 5)
                 
-                results = await context.agent.memory.search(query, top_k=5)
-                # 格式化结果
-                formatted = "\n".join([f"- {r.get('content', '')}" for r in results])
-                return SkillResult(success=True, output=formatted if formatted else "未找到相关记忆")
+                memories = await self.memory_manager.search(
+                    query=query,
+                    limit=limit,
+                    user_id=context.user_id
+                )
+                return SkillResult(success=True, output={"memories": memories})
             
-            return SkillResult(success=False, error=f"Unknown action: {action}")
+            elif action == "forget":
+                memory_id = params.get("memory_id")
+                await self.memory_manager.delete(memory_id)
+                return SkillResult(success=True, output={"deleted": memory_id})
             
+            else:
+                return SkillResult(success=False, output=None, error=f"Unknown action: {action}")
+        
         except Exception as e:
-            import traceback
-            logger.error(f"Memory skill error: {traceback.format_exc()}")
-            return SkillResult(success=False, error=f"Internal error: {str(e)}")
-
-
-class OpenClawRunnerSkill(NativeSkill):
-    """运行 OpenClaw 兼容层 Skill"""
+            return SkillResult(success=False, output=None, error=str(e))
     
-    name = "run_openclaw_skill"
-    description = "运行 OpenClaw 生态中的技能（如 browser-cash, weather 等）。使用此工具执行特定的外部脚本或操作。"
-    
-    parameters = {
-        "type": "object",
-        "properties": {
-            "skill_name": {
-                "type": "string",
-                "description": "OpenClaw 技能名称 (例如: 'weather', 'browser-cash')"
+    def get_tools(self) -> List[Dict]:
+        """记忆工具定义"""
+        return [
+            {
+                "type": "function",
+                "function": {
+                    "name": "memory_remember",
+                    "description": "存储重要信息到长期记忆",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "content": {"type": "string", "description": "要记忆的内容"},
+                            "level": {"type": "string", "enum": ["P0", "P1", "P2"], "description": "优先级 (P0=永久, P1=普通, P2=临时)"},
+                            "tags": {"type": "array", "items": {"type": "string"}, "description": "标签"}
+                        },
+                        "required": ["content"]
+                    }
+                }
             },
-            "action": {
-                "type": "string",
-                "description": "要执行的动作/脚本 (默认为 'run' 或 'index')"
-            },
-            "params": {
-                "type": "object",
-                "description": "传递给技能的参数 (key-value对)"
+            {
+                "type": "function",
+                "function": {
+                    "name": "memory_recall",
+                    "description": "从记忆中检索相关信息",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "query": {"type": "string", "description": "查询关键词"},
+                            "limit": {"type": "integer", "description": "返回数量"}
+                        },
+                        "required": ["query"]
+                    }
+                }
             }
-        },
-        "required": ["skill_name"]
-    }
-    
-    async def execute(self, context: SkillContext, **kwargs) -> SkillResult:
-        skill_name = kwargs.get("skill_name")
-        action = kwargs.get("action", "run")
-        params = kwargs.get("params", {})
-        
-        if not context.agent or not context.agent.openclaw_skills:
-            return SkillResult(success=False, error="OpenClaw adapter not available")
-        
-        # 调用适配器
-        result = await context.agent.openclaw_skills.execute(
-            skill_name, action, params
-        )
-        
-        return SkillResult(
-            success=result.success,
-            output=result.output,
-            error=result.error
-        )
+        ]

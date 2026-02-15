@@ -420,7 +420,11 @@ class MLXAgent:
     async def _init_health_server(self):
         """初始化健康检查服务器"""
         # 从配置获取健康检查端口
-        health_port = getattr(self.config, 'health_check', {}).get('port', 8080)
+        health_check = getattr(self.config, 'health_check', None)
+        if health_check:
+            health_port = getattr(health_check, 'port', 8080)
+        else:
+            health_port = 8080
         
         self.health_server = HealthCheckServer(self, port=health_port)
         await self.health_server.start()
