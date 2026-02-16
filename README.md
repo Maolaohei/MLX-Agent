@@ -1,4 +1,4 @@
-# MLX-Agent
+# MLX-Agent 停止维护
 
 [![Status](https://img.shields.io/badge/status-production-green)](https://github.com/Maolaohei/MLX-Agent)
 [![Version](https://img.shields.io/badge/version-0.4.0-blue)](https://github.com/Maolaohei/MLX-Agent/releases)
