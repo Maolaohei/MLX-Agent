@@ -16,6 +16,17 @@ from .backup import BackupPlugin
 from .api_manager import APIManagerPlugin
 from .briefing import BriefingPlugin
 from .remindme import RemindmePlugin
+from .cron import CronPlugin
+from .telegram_sender import TelegramSenderPlugin
+from .image_recognition import ImageRecognitionPlugin
+from .subagent import SubAgentPlugin
+
+# 迁移自 OpenClaw 的技能
+from .bilibili import BilibiliPlugin
+from .pixiv import PixivPlugin
+from .anilist import AniListPlugin
+from .pdf import PDFPlugin
+from .excel import ExcelPlugin
 
 
 __all__ = [
@@ -29,6 +40,16 @@ __all__ = [
     "APIManagerPlugin",
     "BriefingPlugin",
     "RemindmePlugin",
+    "CronPlugin",
+    "TelegramSenderPlugin",
+    "ImageRecognitionPlugin",
+    "SubAgentPlugin",
+    # 迁移自 OpenClaw 的技能
+    "BilibiliPlugin",
+    "PixivPlugin",
+    "AniListPlugin",
+    "PDFPlugin",
+    "ExcelPlugin",
     # 工具函数
     "get_all_plugins",
     "discover_plugins",
@@ -42,6 +63,16 @@ BUILTIN_PLUGINS: List[Type[Plugin]] = [
     APIManagerPlugin,
     BriefingPlugin,
     RemindmePlugin,
+    CronPlugin,
+    TelegramSenderPlugin,
+    ImageRecognitionPlugin,
+    SubAgentPlugin,
+    # 迁移自 OpenClaw 的技能
+    BilibiliPlugin,
+    PixivPlugin,
+    AniListPlugin,
+    PDFPlugin,
+    ExcelPlugin,
 ]
 
 
